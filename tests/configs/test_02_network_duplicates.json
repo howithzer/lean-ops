@@ -1,0 +1,28 @@
+{
+    "name": "Test 2: Network Duplicates (FIFO)",
+    "description": "Simulate network retries - same message_id, multiple records. First should win.",
+    "run_mode": "local",
+    "log_format": "user",
+    "log_level": "DEBUG",
+    "sink_type": "file",
+    "concurrency": 3,
+    "batch_size": 50,
+    "total_records": 500,
+    "metrics_interval_seconds": 10,
+    "schema_config": {
+        "base_schema": "../../Testing_Framework_EEH_2.0/sample-data-generator/schemas/iceberg_raw_events_v2.json",
+        "drift": {
+            "enabled": false,
+            "percentage": 0.0
+        },
+        "duplicates": {
+            "enabled": true,
+            "percentage": 0.3,
+            "max_duplicates": 5,
+            "duplicate_key": "messageId"
+        }
+    },
+    "file_config": {
+        "output_dir": "./tests/output/test_02_network_duplicates"
+    }
+}

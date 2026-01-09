@@ -1,0 +1,102 @@
+{
+    "name": "events_semantic_schema",
+    "version": "1.0.0",
+    "description": "Semantic schema for events topic - used by unified job",
+    "json_paths": {
+        "message_id": "$.messageId",
+        "publish_time": "$.publishTime",
+        "idempotency_key": "$.payload._metadata.idempotencyKeyResource",
+        "correlation_id": "$.payload._metadata.correlationId",
+        "period_reference": "$.payload._metadata.periodReference",
+        "session_id": "$.payload.sessionId",
+        "event_verb": "$.payload.event.verb",
+        "event_type": "$.payload.event.eventType",
+        "application_id": "$.payload.event.applicationId",
+        "user_id": "$.payload.event.userId",
+        "event_timestamp": "$.payload.event.timestamp",
+        "ip_address": "$.payload.event.metadata.ipAddress",
+        "user_agent": "$.payload.event.metadata.userAgent",
+        "device_id": "$.payload.event.metadata.deviceId"
+    },
+    "columns": {
+        "message_id": {
+            "type": "STRING",
+            "required": true,
+            "cde": true
+        },
+        "publish_time": {
+            "type": "TIMESTAMP",
+            "required": true,
+            "cde": true
+        },
+        "idempotency_key": {
+            "type": "STRING",
+            "required": true,
+            "cde": true,
+            "description": "Business key for deduplication"
+        },
+        "correlation_id": {
+            "type": "STRING",
+            "required": false
+        },
+        "period_reference": {
+            "type": "STRING",
+            "required": true,
+            "cde": true,
+            "description": "Period end reference for reconciliation"
+        },
+        "session_id": {
+            "type": "STRING",
+            "required": false
+        },
+        "event_verb": {
+            "type": "STRING",
+            "required": true,
+            "cde": true
+        },
+        "event_type": {
+            "type": "STRING",
+            "required": true,
+            "cde": true
+        },
+        "application_id": {
+            "type": "INT",
+            "required": false
+        },
+        "user_id": {
+            "type": "STRING",
+            "required": true,
+            "cde": true,
+            "sensitive": true,
+            "description": "PII - will be hashed"
+        },
+        "event_timestamp": {
+            "type": "TIMESTAMP",
+            "required": true,
+            "cde": true
+        },
+        "ip_address": {
+            "type": "STRING",
+            "required": false,
+            "sensitive": true
+        },
+        "user_agent": {
+            "type": "STRING",
+            "required": false
+        },
+        "device_id": {
+            "type": "STRING",
+            "required": false
+        }
+    },
+    "passthrough_columns": [
+        "ingestion_ts",
+        "json_payload"
+    ],
+    "partitioning": {
+        "columns": [
+            "period_reference",
+            "day(publish_time)"
+        ]
+    }
+}

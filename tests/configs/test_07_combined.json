@@ -1,0 +1,31 @@
+{
+    "name": "Test 7: Combined - Duplicates + Drift",
+    "description": "Real-world scenario: network retries, app corrections, and new fields",
+    "run_mode": "local",
+    "log_format": "user",
+    "log_level": "INFO",
+    "sink_type": "file",
+    "concurrency": 5,
+    "batch_size": 100,
+    "total_records": 1000,
+    "metrics_interval_seconds": 10,
+    "schema_config": {
+        "base_schema": "../../Testing_Framework_EEH_2.0/sample-data-generator/schemas/iceberg_raw_events_v2.json",
+        "drift": {
+            "enabled": true,
+            "percentage": 0.2,
+            "add_columns": true,
+            "delete_columns": false,
+            "reorder_columns": true,
+            "type_changes": false
+        },
+        "duplicates": {
+            "enabled": true,
+            "percentage": 0.15,
+            "max_duplicates": 3
+        }
+    },
+    "file_config": {
+        "output_dir": "./tests/output/test_07_combined"
+    }
+}

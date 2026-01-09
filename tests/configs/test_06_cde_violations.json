@@ -1,0 +1,35 @@
+{
+    "name": "Test 6: CDE Violations",
+    "description": "Records missing required CDEs should go to errors table, not Semantic",
+    "run_mode": "local",
+    "log_format": "user",
+    "log_level": "DEBUG",
+    "sink_type": "file",
+    "concurrency": 3,
+    "batch_size": 50,
+    "total_records": 500,
+    "metrics_interval_seconds": 10,
+    "schema_config": {
+        "base_schema": "../../Testing_Framework_EEH_2.0/sample-data-generator/schemas/iceberg_raw_events_v2.json",
+        "drift": {
+            "enabled": true,
+            "percentage": 0.2,
+            "add_columns": false,
+            "delete_columns": true,
+            "reorder_columns": false,
+            "type_changes": false,
+            "target_columns": [
+                "eventType",
+                "userId",
+                "periodReference"
+            ]
+        },
+        "duplicates": {
+            "enabled": false,
+            "percentage": 0.0
+        }
+    },
+    "file_config": {
+        "output_dir": "./tests/output/test_06_cde_violations"
+    }
+}

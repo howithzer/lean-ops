@@ -1,0 +1,26 @@
+{
+    "name": "Test 1: Happy Path",
+    "description": "Normal processing - no drift, no duplicates",
+    "run_mode": "local",
+    "log_format": "user",
+    "log_level": "INFO",
+    "sink_type": "file",
+    "concurrency": 3,
+    "batch_size": 50,
+    "total_records": 500,
+    "metrics_interval_seconds": 10,
+    "schema_config": {
+        "base_schema": "../../Testing_Framework_EEH_2.0/sample-data-generator/schemas/iceberg_raw_events_v2.json",
+        "drift": {
+            "enabled": false,
+            "percentage": 0.0
+        },
+        "duplicates": {
+            "enabled": false,
+            "percentage": 0.0
+        }
+    },
+    "file_config": {
+        "output_dir": "./tests/output/test_01_happy_path"
+    }
+}

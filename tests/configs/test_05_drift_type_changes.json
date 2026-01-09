@@ -1,0 +1,30 @@
+{
+    "name": "Test 5: Schema Drift - Type Changes",
+    "description": "Semantic should fail on type mismatch, Curated should succeed (all STRING)",
+    "run_mode": "local",
+    "log_format": "user",
+    "log_level": "DEBUG",
+    "sink_type": "file",
+    "concurrency": 3,
+    "batch_size": 50,
+    "total_records": 500,
+    "metrics_interval_seconds": 10,
+    "schema_config": {
+        "base_schema": "../../Testing_Framework_EEH_2.0/sample-data-generator/schemas/iceberg_raw_events_v2.json",
+        "drift": {
+            "enabled": true,
+            "percentage": 0.5,
+            "add_columns": false,
+            "delete_columns": false,
+            "reorder_columns": false,
+            "type_changes": true
+        },
+        "duplicates": {
+            "enabled": false,
+            "percentage": 0.0
+        }
+    },
+    "file_config": {
+        "output_dir": "./tests/output/test_05_drift_type_changes"
+    }
+}

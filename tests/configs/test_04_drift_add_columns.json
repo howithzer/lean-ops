@@ -1,0 +1,30 @@
+{
+    "name": "Test 4: Schema Drift - Add Columns",
+    "description": "Curated should auto-add new columns, Semantic should log drift but continue",
+    "run_mode": "local",
+    "log_format": "user",
+    "log_level": "DEBUG",
+    "sink_type": "file",
+    "concurrency": 3,
+    "batch_size": 50,
+    "total_records": 500,
+    "metrics_interval_seconds": 10,
+    "schema_config": {
+        "base_schema": "../../Testing_Framework_EEH_2.0/sample-data-generator/schemas/iceberg_raw_events_v2.json",
+        "drift": {
+            "enabled": true,
+            "percentage": 0.3,
+            "add_columns": true,
+            "delete_columns": false,
+            "reorder_columns": false,
+            "type_changes": false
+        },
+        "duplicates": {
+            "enabled": false,
+            "percentage": 0.0
+        }
+    },
+    "file_config": {
+        "output_dir": "./tests/output/test_04_drift_add_columns"
+    }
+}
