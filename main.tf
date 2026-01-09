@@ -128,11 +128,11 @@ module "ingestion" {
 }
 
 # =============================================================================
-# SEMANTIC MODULE
+# UNIFIED MODULE (replaces semantic module)
 # =============================================================================
 
-module "semantic" {
-  source       = "./modules/semantic"
+module "unified" {
+  source       = "./modules/unified"
   environment  = var.environment
   topics       = var.topics
   iceberg_bucket = var.iceberg_bucket
@@ -140,7 +140,6 @@ module "semantic" {
   glue_role_arn  = var.glue_role_arn
   
   checkpoints_table_name = module.shared_services.checkpoints_table_name
-  locks_table_name       = module.shared_services.locks_table_name
   schedule_expression    = var.semantic_schedule
   
   tags = local.common_tags
@@ -168,13 +167,13 @@ output "firehose_stream_name" {
 }
 
 output "state_machine_arn" {
-  description = "Semantic orchestrator Step Function ARN"
-  value       = module.semantic.state_machine_arn
+  description = "Unified orchestrator Step Function ARN"
+  value       = module.unified.state_machine_arn
 }
 
 output "alerts_topic_arn" {
   description = "SNS topic for alerts"
-  value       = module.semantic.alerts_topic_arn
+  value       = module.unified.alerts_topic_arn
 }
 
 output "dynamodb_tables" {

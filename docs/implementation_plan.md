@@ -110,8 +110,21 @@ def main():
 
 ```python
 def main():
-    raw_df = read_from_snapshot(last_curated_checkpoint)  # Use curated as source of truth
+    # Get BOTH checkpoints
+    curated_chkpt = get_checkpoint("curated")   # e.g., 103
+    semantic_chkpt = get_checkpoint("semantic")  # e.g., 100
+    
+    # Determine what to read (minimum = earliest checkpoint)
+    read_from = min(curated_chkpt, semantic_chkpt)  # Read from 100
+    
+    raw_df = read_from_snapshot(snapshot_after=read_from)
     deduped = dedup(raw_df)
+    
+    # CURATED: Only write if new data for curated
+    if current_snapshot > curated_chkpt:
+        curated_df = flatten_to_strings(deduped)
+        curated_df.writeTo("curated_db.{topic}").append()
+        update_curated_checkpoint(current_snapshot)
     
     # === CURATED OUTPUT (always happens first) ===
     try:
