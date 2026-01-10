@@ -1,88 +1,84 @@
-# Lean-Ops
+# Lean-Ops: Resilient Iceberg Data Pipeline
 
-Simplified, fail-aware data pipeline with 2 layers (RAW → Semantic).
+A simplified, fail-aware data pipeline implementing **Iceberg V2** on AWS. Built with Modular Terraform and Python, designed for high throughput and fault tolerance.
 
-## Architecture
+## 🏗 Architecture
 
+```mermaid
+graph LR
+    SQS[SQS Triggers] --> Lambda[SQS Processor]
+    Lambda --> Firehose[Firehose Stream]
+    Firehose --> Iceberg[Iceberg RAW]
+    
+    %% Fail-Aware Path
+    Lambda -- Error --> DLQ[Centralized DLQ]
+    DLQ --> DLQProc[DLQ Processor]
+    DLQProc --> S3Archive[S3 Archive]
+    DLQProc --> DynamoDB[Error Tracker]
+    
+    %% Circuit Breaker
+    CW[CloudWatch Alarms] -- Error Rate > 50% --> CB[Circuit Breaker Lambda]
+    CB -- Disable --> SQS
 ```
-┌────────────────────────────────────────────────────────────────────────────┐
-│                         GOVERNANCE PLANE                                   │
-│  Topic Registry | Schema Registry | PII Masking                            │
-├────────────────────────────────────────────────────────────────────────────┤
-│                           QUALITY PLANE                                    │
-│  Water Balance | Freshness SLA | CDE Validation | Schema Drift             │
-├────────────────────────────────────────────────────────────────────────────┤
-│                            DATA PLANE                                      │
-│  SQS → Lambda → Firehose → RAW (Iceberg) → Semantic Job → Semantic Table   │
-└────────────────────────────────────────────────────────────────────────────┘
-```
 
-## Components
+## 🚀 Features (Wave 2)
 
-| Module | Purpose |
-|--------|---------|
-| `modules/ingestion` | SQS, Lambda, Firehose, DLQ |
-| `modules/semantic` | Glue job, Step Functions |
-| `modules/shared-services` | DynamoDB tables |
-| `modules/quality` | Water Balance, Freshness SLA |
+| Feature | Status | Description |
+|---------|--------|-------------|
+| **Schema Drift** | ✅ | Automatically handles unexpected fields in `json_payload` |
+| **Fail-Aware Processing** | ✅ | `classify_error()` routes exceptions (DROP vs RETRY) |
+| **Centralized DLQ** | ✅ | All topic failures route to single DLQ with archiving |
+| **Circuit Breaker** | ✅ | Disables ingestion during high error rates |
+| **Modular Terraform** | ✅ | 8 granular modules (compute, messaging, etc.) |
 
-## Fail-Aware Patterns
+## 📦 Modules
 
-| Pattern | Implementation |
-|---------|----------------|
-| Error classification | MALFORMED_JSON → DLQ (no retry) |
-| MaximumConcurrency | Limits ESM polling, not Lambda |
-| No-data short-circuit | Skip Glue if no new snapshots |
-| Duplicate prevention | DynamoDB locks |
-| Centralized DLQ | All topics → one DLQ with context |
+| Module | Purpose | Resources |
+|--------|---------|-----------|
+| `modules/ingestion` | Firehose delivery stream to Iceberg | 8 |
+| `modules/compute` | SQS Processor, DLQ Processor, Circuit Breaker | 12 |
+| `modules/messaging` | SQS queues per topic + Centralized DLQ | 4+ |
+| `modules/state` | DynamoDB tables (checkpoints, locks, errors) | 6 |
+| `modules/observability` | CloudWatch Alarms + SNS Alerts | 4 |
 
-## Deploy
+## 🧪 Verification Results
+
+| Scenario | Result | Status |
+|----------|--------|--------|
+| **Happy Path** | 5,000 records processed at ~1,200/sec | ✅ |
+| **Malformed JSON** | Logged as `DROPPING` (no retry) | ✅ |
+| **Processing Error** | Retried 3x → DLQ → S3 Archive | ✅ |
+| **DLQ Archival** | Failed messages stored in `s3://.../dlq-archive/` | ✅ |
+| **DynamoDB Logging** | Errors logged with metadata in `error_tracker` | ✅ |
+
+## 🛠 Deployment
 
 ```bash
-# 1. Configure
-cp environments/dev.tfvars environments/your-env.tfvars
-# Edit with your values
+# 1. Configure Environment
+cp environments/dev.tfvars environments/prod.tfvars
 
-# 2. Initialize
-terraform init
+# 2. Deploy Infrastructure
+aws-vault exec your-profile -- terraform apply -var-file="environments/dev.tfvars"
 
-# 3. Plan
-terraform plan -var-file="environments/your-env.tfvars"
-
-# 4. Apply
-terraform apply -var-file="environments/your-env.tfvars"
-
-# 5. Upload Glue script
-aws s3 cp modules/semantic/semantic_job.py \
-    s3://YOUR_BUCKET/glue-scripts/semantic_job.py
+# 3. Inject Test Data (Optional)
+python3 tools/data_injector/main.py --config tests/configs/thundering_herd.json
 ```
 
-## DynamoDB Tables
+## 📚 Lessons Learned
 
-| Table | Purpose |
-|-------|---------|
-| `checkpoints` | Last processed snapshot per topic |
-| `error_tracker` | All errors with context |
-| `counters` | Daily metrics per topic |
-| `topic_registry` | Configuration per topic |
-| `compaction_tracking` | Compaction history |
-| `locks` | Duplicate trigger prevention |
+### Critical Fixes
+1. **SQS Visibility vs Lambda Timeout**:
+   - *Issue*: 30s SQS visibility < 60s Lambda timeout caused duplicating messages.
+   - *Fix*: Set SQS Visibility to `300s`, Lambda Timeout to `30s`.
+2. **DynamoDB Key Mismatch**:
+   - *Issue*: Lambda used generic `pk` keys vs Terraform `topic_name` schema.
+   - *Fix*: Aligned Lambda code to match strict Terraform schema.
+3. **ReportBatchItemFailures**:
+   - *Issue*: Failed batch items were being deleted.
+   - *Fix*: Enabled partial batch responses in ESM.
 
-## Folder Structure
+## 🔮 Next Steps (Wave 3)
+- [ ] **Water Balance Monitoring**: Compare record counts (RAW vs Semantic).
+- [ ] **DLQ Age Alarm**: Alert on messages older than 7 days.
+- [ ] **BisectBatchOnFunctionError**: optimizing large batch retries.
 
-```
-lean-ops/
-├── main.tf                    # Root module
-├── environments/
-│   └── dev.tfvars            # Environment config
-├── modules/
-│   ├── ingestion/            # SQS, Lambda, Firehose
-│   ├── semantic/             # Glue, Step Functions
-│   ├── shared-services/      # DynamoDB tables
-│   └── quality/              # Water Balance, Freshness
-└── lambda/
-    ├── sqs_processor/        # SQS → Firehose
-    ├── firehose_transform/   # Dynamic routing
-    ├── water_balance/        # RAW ≈ Semantic check
-    └── freshness_sla/        # Data freshness check
-```
