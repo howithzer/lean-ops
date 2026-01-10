@@ -7,11 +7,11 @@ environment = "dev"
 topics = ["events", "orders", "payments"]
 
 # S3 buckets
-iceberg_bucket = "lean-ops-dev-iceberg"
-schema_bucket  = "lean-ops-dev-schemas"
+iceberg_bucket = "lean-ops-development-iceberg"
+schema_bucket  = "lean-ops-development-schemas"
 
-# Glue role (must exist)
-glue_role_arn = "arn:aws:iam::YOUR_ACCOUNT_ID:role/GlueServiceRole"
+# Glue role (will be created by Terraform)
+glue_role_arn = "arn:aws:iam::487500748616:role/lean-ops-dev-glue-role"
 
 # Scaling
 maximum_concurrency = 50
