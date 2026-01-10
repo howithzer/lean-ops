@@ -90,6 +90,40 @@ def extract_business_keys(payload):
     return idempotency_key, period_reference, correlation_id
 
 
+def classify_error(error):
+    """
+    Classify errors to determine handling strategy.
+    
+    DROP: Log and return success (don't retry)
+    RETRY: Return in batchItemFailures (will retry → DLQ)
+    
+    Error Classification Strategy:
+    - MALFORMED_JSON     → DROP (no point retrying)
+    - INVALID_CONTRACT   → DROP (schema error, won't fix itself)
+    - FIREHOSE_THROTTLE  → RETRY (transient, will succeed)
+    - DOWNSTREAM_TIMEOUT → RETRY (transient)
+    - UNKNOWN            → RETRY (let SQS retry → DLQ)
+    """
+    error_msg = str(error).lower()
+    
+    # DROP: Malformed data - retrying won't help
+    if any(x in error_msg for x in ['json', 'decode', 'expecting value', 'expecting property']):
+        return 'DROP', 'MALFORMED_JSON'
+    
+    if any(x in error_msg for x in ['keyerror', 'missing required', 'invalid schema']):
+        return 'DROP', 'INVALID_CONTRACT'
+    
+    # RETRY: Transient errors - will likely succeed on retry
+    if any(x in error_msg for x in ['throttl', 'provision', 'capacity']):
+        return 'RETRY', 'FIREHOSE_THROTTLE'
+    
+    if any(x in error_msg for x in ['timeout', 'timed out', 'connection']):
+        return 'RETRY', 'DOWNSTREAM_TIMEOUT'
+    
+    # Default: Let SQS retry → eventually DLQ
+    return 'RETRY', 'UNKNOWN_ERROR'
+
+
 def lambda_handler(event, context):
     """
     Process SQS messages from multiple queues and forward to shared Firehose.
@@ -99,6 +133,7 @@ def lambda_handler(event, context):
     """
     records = []
     batch_item_failures = []
+    dropped_count = 0
     
     # Group records by topic for logging
     topic_counts = {}
@@ -143,10 +178,19 @@ def lambda_handler(event, context):
             })
             
         except Exception as e:
-            print(f"Error processing record {i}: {e}")
-            batch_item_failures.append({
-                'itemIdentifier': record['messageId']
-            })
+            action, error_type = classify_error(e)
+            
+            if action == 'DROP':
+                # Log and continue - don't retry malformed data
+                print(f"DROPPING record {i} ({error_type}): {e}")
+                dropped_count += 1
+                # Return SUCCESS for this record (don't add to failures)
+            else:
+                # RETRY - add to batch failures for SQS retry
+                print(f"RETRY record {i} ({error_type}): {e}")
+                batch_item_failures.append({
+                    'itemIdentifier': record['messageId']
+                })
     
     # Log topic distribution
     print(f"Processing {len(records)} records from topics: {topic_counts}")

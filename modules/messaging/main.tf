@@ -76,8 +76,9 @@ locals {
 # =============================================================================
 
 resource "aws_sqs_queue" "centralized_dlq" {
-  name                      = "${local.name_prefix}-centralized-dlq"
-  message_retention_seconds = var.message_retention
+  name                       = "${local.name_prefix}-centralized-dlq"
+  message_retention_seconds  = var.message_retention
+  visibility_timeout_seconds = 300
   
   tags = merge(local.common_tags, {
     Purpose = "Dead Letter Queue"

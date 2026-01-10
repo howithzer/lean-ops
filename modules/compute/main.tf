@@ -70,6 +70,11 @@ variable "schema_bucket" {
   type        = string
 }
 
+variable "archive_bucket" {
+  description = "S3 bucket for DLQ archive (dlq-archive/ prefix)"
+  type        = string
+}
+
 variable "tags" {
   description = "Common tags"
   type        = map(string)
@@ -291,6 +296,168 @@ resource "aws_lambda_function" "check_schema" {
 }
 
 # =============================================================================
+# LAMBDA: DLQ PROCESSOR
+# =============================================================================
+# Archives failed messages from DLQ to S3 and logs to DynamoDB
+
+data "archive_file" "dlq_processor" {
+  type        = "zip"
+  source_dir  = "${path.module}/lambda/dlq_processor"
+  output_path = "${path.module}/.build/dlq_processor.zip"
+}
+
+resource "aws_iam_role" "dlq_processor" {
+  name = "${local.name_prefix}-dlq-processor-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy" "dlq_processor" {
+  name = "${local.name_prefix}-dlq-processor-policy"
+  role = aws_iam_role.dlq_processor.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:*:*:*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        Resource = var.dlq_arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = "arn:aws:s3:::${var.archive_bucket}/dlq-archive/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:PutItem"]
+        Resource = var.error_tracker_table_arn
+      }
+    ]
+  })
+}
+
+resource "aws_lambda_function" "dlq_processor" {
+  filename         = data.archive_file.dlq_processor.output_path
+  function_name    = "${local.name_prefix}-dlq-processor"
+  role             = aws_iam_role.dlq_processor.arn
+  handler          = "handler.lambda_handler"
+  source_code_hash = data.archive_file.dlq_processor.output_base64sha256
+  runtime          = "python3.11"
+  timeout          = 30
+  memory_size      = 256
+
+  environment {
+    variables = {
+      ARCHIVE_BUCKET = var.archive_bucket
+      ERROR_TABLE    = var.error_tracker_table_name
+    }
+  }
+
+  tags = local.common_tags
+}
+
+# DLQ Event Source Mapping
+resource "aws_lambda_event_source_mapping" "dlq_trigger" {
+  event_source_arn = var.dlq_arn
+  function_name    = aws_lambda_function.dlq_processor.arn
+  batch_size       = 10
+  enabled          = true
+}
+
+# =============================================================================
+# LAMBDA: CIRCUIT BREAKER
+# =============================================================================
+# Disables/enables SQS event source mappings based on error rate
+
+data "archive_file" "circuit_breaker" {
+  type        = "zip"
+  source_file = "${path.module}/lambda/circuit_breaker/handler.py"
+  output_path = "${path.module}/.build/circuit_breaker.zip"
+}
+
+resource "aws_iam_role" "circuit_breaker" {
+  name = "${local.name_prefix}-circuit-breaker-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy" "circuit_breaker" {
+  name = "${local.name_prefix}-circuit-breaker-policy"
+  role = aws_iam_role.circuit_breaker.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:*:*:*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "lambda:ListEventSourceMappings",
+          "lambda:UpdateEventSourceMapping"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_lambda_function" "circuit_breaker" {
+  filename         = data.archive_file.circuit_breaker.output_path
+  function_name    = "${local.name_prefix}-circuit-breaker"
+  role             = aws_iam_role.circuit_breaker.arn
+  handler          = "handler.lambda_handler"
+  source_code_hash = data.archive_file.circuit_breaker.output_base64sha256
+  runtime          = "python3.11"
+  timeout          = 30
+  memory_size      = 128
+
+  environment {
+    variables = {
+      SQS_PROCESSOR_FUNCTION = aws_lambda_function.sqs_processor.function_name
+    }
+  }
+
+  tags = local.common_tags
+}
+
+# =============================================================================
 # OUTPUTS
 # =============================================================================
 
@@ -323,3 +490,14 @@ output "check_schema_name" {
   description = "Check schema Lambda function name"
   value       = aws_lambda_function.check_schema.function_name
 }
+
+output "dlq_processor_arn" {
+  description = "DLQ processor Lambda ARN"
+  value       = aws_lambda_function.dlq_processor.arn
+}
+
+output "circuit_breaker_arn" {
+  description = "Circuit breaker Lambda ARN"
+  value       = aws_lambda_function.circuit_breaker.arn
+}
+

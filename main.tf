@@ -154,11 +154,13 @@ module "messaging" {
 module "observability" {
   source = "./modules/observability"
 
-  environment = var.environment
-  dlq_name    = module.messaging.dlq_name
-  tags        = local.common_tags
+  environment                 = var.environment
+  dlq_name                    = module.messaging.dlq_name
+  sqs_processor_function_name = module.compute.sqs_processor_name
+  circuit_breaker_lambda_arn  = module.compute.circuit_breaker_arn
+  tags                        = local.common_tags
 
-  depends_on = [module.messaging]
+  depends_on = [module.messaging, module.compute]
 }
 
 # =============================================================================
@@ -177,6 +179,7 @@ module "compute" {
   error_tracker_table_arn  = module.state.error_tracker_table_arn
   error_tracker_table_name = module.state.error_tracker_table_name
   schema_bucket            = var.schema_bucket
+  archive_bucket           = var.iceberg_bucket  # Reuse Iceberg bucket for DLQ archive
   tags                     = local.common_tags
 
   depends_on = [module.messaging, module.state]
