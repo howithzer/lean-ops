@@ -1,84 +1,96 @@
-# Lean-Ops: Resilient Iceberg Data Pipeline
+# Lean-Ops: IoT Event Data Platform
 
-A simplified, fail-aware data pipeline implementing **Iceberg V2** on AWS. Built with Modular Terraform and Python, designed for high throughput and fault tolerance.
+A scalable, fail-aware data platform designed to ingest high-velocity IoT sensor data, process it through resiliency layers, and deliver curated insights via Apache Iceberg arrays.
 
-## 🏗 Architecture
+## Data Flow Architecture
+
+This platform manages the end-to-end lifecycle of sensor data:
 
 ```mermaid
 graph LR
-    SQS[SQS Triggers] --> Lambda[SQS Processor]
-    Lambda --> Firehose[Firehose Stream]
-    Firehose --> Iceberg[Iceberg RAW]
+    %% Sources
+    IoT[IoT Sensors] -->|JSON Events| SQS[SQS Integration]
+
+    %% Ingestion Layer
+    SQS --> Processor[Lambda Processor]
+    Processor --> Firehose[Kinesis Firehose]
     
-    %% Fail-Aware Path
-    Lambda -- Error --> DLQ[Centralized DLQ]
-    DLQ --> DLQProc[DLQ Processor]
-    DLQProc --> S3Archive[S3 Archive]
-    DLQProc --> DynamoDB[Error Tracker]
-    
-    %% Circuit Breaker
-    CW[CloudWatch Alarms] -- Error Rate > 50% --> CB[Circuit Breaker Lambda]
-    CB -- Disable --> SQS
+    %% Resilience Path
+    Processor -- Malformed/Error --> DLQ[Dead Letter Queue]
+    DLQ --> DLQProc[DLQ Archiver]
+    DLQProc --> S3Archive[S3 Cold Storage]
+
+    %% Storage Layer (RAW)
+    Firehose --> IcebergRAW[Iceberg RAW Table]
+
+    %% Curation Layer
+    IcebergRAW --> Orchestrator[Step Functions]
+    Orchestrator --> CurateJob[Glue Spark Job]
+    CurateJob --> IcebergCurated[Iceberg Curated Table]
 ```
 
-## 🚀 Features (Wave 2)
+## System Overview
 
-| Feature | Status | Description |
-|---------|--------|-------------|
-| **Schema Drift** | ✅ | Automatically handles unexpected fields in `json_payload` |
-| **Fail-Aware Processing** | ✅ | `classify_error()` routes exceptions (DROP vs RETRY) |
-| **Centralized DLQ** | ✅ | All topic failures route to single DLQ with archiving |
-| **Circuit Breaker** | ✅ | Disables ingestion during high error rates |
-| **Modular Terraform** | ✅ | 8 granular modules (compute, messaging, etc.) |
+The system is built on a modular Terraform architecture designed to handle:
+1.  **Ingestion**: High-throughput event buffering via SQS and Kinesis Firehose.
+2.  **Resilience**: Automated handling of bad data (schema drift, malformed payloads) without stopping the pipeline.
+3.  **Storage**: Acid-compliant Apache Iceberg tables on S3 for both raw and curated data.
+4.  **Curation**: Scheduled processing to clean, deduplicate, and aggregate raw sensor data.
 
-## 📦 Modules
+## Key Features
 
-| Module | Purpose | Resources |
-|--------|---------|-----------|
-| `modules/ingestion` | Firehose delivery stream to Iceberg | 8 |
-| `modules/compute` | SQS Processor, DLQ Processor, Circuit Breaker | 12 |
-| `modules/messaging` | SQS queues per topic + Centralized DLQ | 4+ |
-| `modules/state` | DynamoDB tables (checkpoints, locks, errors) | 6 |
-| `modules/observability` | CloudWatch Alarms + SNS Alerts | 4 |
+### Fail-Aware Processing
+The pipeline implements a "fail-aware" pattern to ensure data integrity:
+- **Schema Drift Tolerance**: Unexpected fields in IoT payloads are captured in a generic `json_payload` column instead of causing failures.
+- **Error Routing**: Malformed data is dropped immediately; transient errors are retried; persistent failures are routed to a DLQ and archived to S3.
+- **Circuit Breaking**: Automated mechanisms pause ingestion if error rates exceed safety thresholds (e.g., >50%).
 
-## 🧪 Verification Results
+### Modular Infrastructure
+The codebase is organized into granular Terraform modules:
 
-| Scenario | Result | Status |
-|----------|--------|--------|
-| **Happy Path** | 5,000 records processed at ~1,200/sec | ✅ |
-| **Malformed JSON** | Logged as `DROPPING` (no retry) | ✅ |
-| **Processing Error** | Retried 3x → DLQ → S3 Archive | ✅ |
-| **DLQ Archival** | Failed messages stored in `s3://.../dlq-archive/` | ✅ |
-| **DynamoDB Logging** | Errors logged with metadata in `error_tracker` | ✅ |
+| Module | Description |
+|--------|-------------|
+| `modules/ingestion` | Kinesis Firehose delivery streams and buffering configuration |
+| `modules/compute` | Lambda functions for signal processing and error handling |
+| `modules/messaging` | SQS queues for per-topic event buffering |
+| `modules/catalog` | Glue Data Catalog and Iceberg table definitions |
+| `modules/orchestration` | Step Functions for managing curation workflows |
+| `modules/observability` | CloudWatch alarms and SNS notification topics |
 
-## 🛠 Deployment
+## Deployment
 
-```bash
-# 1. Configure Environment
-cp environments/dev.tfvars environments/prod.tfvars
+### Prerequisites
+- Terraform >= 1.5
+- AWS CLI configured
 
-# 2. Deploy Infrastructure
-aws-vault exec your-profile -- terraform apply -var-file="environments/dev.tfvars"
+### Quick Start
 
-# 3. Inject Test Data (Optional)
-python3 tools/data_injector/main.py --config tests/configs/thundering_herd.json
-```
+1.  **Configure Environment**
+    ```bash
+    cp environments/dev.tfvars environments/prod.tfvars
+    # Edit variables (account_id, region, buckets)
+    ```
 
-## 📚 Lessons Learned
+2.  **Deploy Modules**
+    ```bash
+    terraform init
+    terraform apply -var-file="environments/prod.tfvars"
+    ```
 
-### Critical Fixes
-1. **SQS Visibility vs Lambda Timeout**:
-   - *Issue*: 30s SQS visibility < 60s Lambda timeout caused duplicating messages.
-   - *Fix*: Set SQS Visibility to `300s`, Lambda Timeout to `30s`.
-2. **DynamoDB Key Mismatch**:
-   - *Issue*: Lambda used generic `pk` keys vs Terraform `topic_name` schema.
-   - *Fix*: Aligned Lambda code to match strict Terraform schema.
-3. **ReportBatchItemFailures**:
-   - *Issue*: Failed batch items were being deleted.
-   - *Fix*: Enabled partial batch responses in ESM.
+3.  **Verify Ingestion**
+    Use the included data injector to simulate IoT traffic:
+    ```bash
+    python3 tools/data_injector/main.py --config tests/configs/happy_path.json
+    ```
 
-## 🔮 Next Steps (Wave 3)
-- [ ] **Water Balance Monitoring**: Compare record counts (RAW vs Semantic).
-- [ ] **DLQ Age Alarm**: Alert on messages older than 7 days.
-- [ ] **BisectBatchOnFunctionError**: optimizing large batch retries.
+## Operations
+
+### Monitoring
+- **Dashboards**: CloudWatch metrics for Ingestion Lag (SQS) and Delivery Latency (Firehose).
+- **Alerts**: Notifications for DLQ non-empty status and high error rates.
+
+### Error Handling
+- **Recoverable Errors**: Automatically retried with exponential backoff.
+- **Poison Messages**: Archived to `s3://.../dlq-archive/` for offline analysis and replay.
+
 
