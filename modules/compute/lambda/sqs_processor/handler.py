@@ -15,31 +15,20 @@ The Firehose Transform Lambda will use topic_name to route to the correct table.
 
 import json
 import os
-import boto3
 import time
 from datetime import datetime, timezone
 from uuid import uuid4
 
-# Initialize clients
-firehose = boto3.client('firehose')
+# Add common library to path
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from common.topic_utils import extract_topic_from_arn
+from common.error_classification import classify_error, ErrorAction
+from common.aws_clients import get_firehose_client
 
 # Environment variable
 FIREHOSE_STREAM_NAME = os.environ.get('FIREHOSE_STREAM_NAME')
-
-
-def extract_topic_from_queue_arn(queue_arn):
-    """
-    Extract topic name from SQS queue ARN.
-    
-    Example:
-        arn:aws:sqs:us-east-1:123456789012:iceberg-dev-events-queue
-        → events
-    """
-    queue_name = queue_arn.split(':')[-1]
-    # Pattern: iceberg-{env}-{topic}-queue
-    parts = queue_name.replace('-queue', '').split('-')
-    # Return the topic part (assumes pattern: prefix-env-topic)
-    return parts[-1] if len(parts) >= 3 else queue_name
 
 
 def extract_nested_value(data, *paths):
@@ -90,40 +79,6 @@ def extract_business_keys(payload):
     return idempotency_key, period_reference, correlation_id
 
 
-def classify_error(error):
-    """
-    Classify errors to determine handling strategy.
-    
-    DROP: Log and return success (don't retry)
-    RETRY: Return in batchItemFailures (will retry → DLQ)
-    
-    Error Classification Strategy:
-    - MALFORMED_JSON     → DROP (no point retrying)
-    - INVALID_CONTRACT   → DROP (schema error, won't fix itself)
-    - FIREHOSE_THROTTLE  → RETRY (transient, will succeed)
-    - DOWNSTREAM_TIMEOUT → RETRY (transient)
-    - UNKNOWN            → RETRY (let SQS retry → DLQ)
-    """
-    error_msg = str(error).lower()
-    
-    # DROP: Malformed data - retrying won't help
-    if any(x in error_msg for x in ['json', 'decode', 'expecting value', 'expecting property']):
-        return 'DROP', 'MALFORMED_JSON'
-    
-    if any(x in error_msg for x in ['keyerror', 'missing required', 'invalid schema']):
-        return 'DROP', 'INVALID_CONTRACT'
-    
-    # RETRY: Transient errors - will likely succeed on retry
-    if any(x in error_msg for x in ['throttl', 'provision', 'capacity']):
-        return 'RETRY', 'FIREHOSE_THROTTLE'
-    
-    if any(x in error_msg for x in ['timeout', 'timed out', 'connection']):
-        return 'RETRY', 'DOWNSTREAM_TIMEOUT'
-    
-    # Default: Let SQS retry → eventually DLQ
-    return 'RETRY', 'UNKNOWN_ERROR'
-
-
 def lambda_handler(event, context):
     """
     Process SQS messages from multiple queues and forward to shared Firehose.
@@ -142,7 +97,7 @@ def lambda_handler(event, context):
         try:
             # Extract topic from SQS queue ARN
             queue_arn = record.get('eventSourceARN', '')
-            topic_name = extract_topic_from_queue_arn(queue_arn)
+            topic_name = extract_topic_from_arn(queue_arn)
             topic_counts[topic_name] = topic_counts.get(topic_name, 0) + 1
             
             # Parse SQS message body
@@ -178,16 +133,16 @@ def lambda_handler(event, context):
             })
             
         except Exception as e:
-            action, error_type = classify_error(e)
+            classification = classify_error(e)
             
-            if action == 'DROP':
+            if classification.action == ErrorAction.DROP:
                 # Log and continue - don't retry malformed data
-                print(f"DROPPING record {i} ({error_type}): {e}")
+                print(f"DROPPING record {i} ({classification.error_type}): {e}")
                 dropped_count += 1
                 # Return SUCCESS for this record (don't add to failures)
             else:
                 # RETRY - add to batch failures for SQS retry
-                print(f"RETRY record {i} ({error_type}): {e}")
+                print(f"RETRY record {i} ({classification.error_type}): {e}")
                 batch_item_failures.append({
                     'itemIdentifier': record['messageId']
                 })
@@ -200,6 +155,7 @@ def lambda_handler(event, context):
         for i in range(0, len(records), 500):
             batch = records[i:i + 500]
             try:
+                firehose = get_firehose_client()
                 response = firehose.put_record_batch(
                     DeliveryStreamName=FIREHOSE_STREAM_NAME,
                     Records=batch

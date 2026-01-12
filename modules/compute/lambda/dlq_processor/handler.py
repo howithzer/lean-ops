@@ -14,37 +14,20 @@ Architecture:
 
 import json
 import os
-import boto3
 from datetime import datetime, timezone
 from uuid import uuid4
 
-# Initialize clients
-s3 = boto3.client('s3')
-dynamodb = boto3.resource('dynamodb')
+# Add common library to path
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from common.topic_utils import extract_topic_from_dlq_attributes
+from common.error_classification import classify_dlq_error
+from common.aws_clients import get_s3_client, get_dynamodb_resource
 
 # Environment variables
 ARCHIVE_BUCKET = os.environ.get('ARCHIVE_BUCKET')
 ERROR_TABLE = os.environ.get('ERROR_TABLE')
-
-
-def extract_topic_from_source_arn(attributes):
-    """
-    Extract original topic from DLQ message attributes.
-    
-    When a message goes to DLQ, SQS adds the original queue ARN in attributes.
-    Pattern: arn:aws:sqs:region:account:lean-ops-{env}-{topic}-queue
-    """
-    # Try to get from message attributes first
-    source_arn = attributes.get('DeadLetterQueueSourceArn', '')
-    
-    if not source_arn:
-        # Fall back to AWSTraceHeader or return unknown
-        return 'unknown'
-    
-    # Extract topic from queue name
-    queue_name = source_arn.split(':')[-1]
-    parts = queue_name.replace('-queue', '').split('-')
-    return parts[-1] if len(parts) >= 3 else 'unknown'
 
 
 def archive_to_s3(topic, message_id, body, attributes, receive_count):
@@ -67,6 +50,7 @@ def archive_to_s3(topic, message_id, body, attributes, receive_count):
         'replay_eligible': True
     }
     
+    s3 = get_s3_client()
     s3.put_object(
         Bucket=ARCHIVE_BUCKET,
         Key=s3_key,
@@ -80,6 +64,7 @@ def archive_to_s3(topic, message_id, body, attributes, receive_count):
 def log_to_dynamodb(topic, message_id, error_type, s3_key, body_preview):
     """Log error to DynamoDB for operational visibility."""
     
+    dynamodb = get_dynamodb_resource()
     table = dynamodb.Table(ERROR_TABLE)
     now = datetime.now(timezone.utc)
     
@@ -94,17 +79,7 @@ def log_to_dynamodb(topic, message_id, error_type, s3_key, body_preview):
     })
 
 
-def classify_dlq_error(body):
-    """Classify why this message ended up in DLQ."""
-    
-    try:
-        parsed = json.loads(body)
-        # If it parsed, it was likely a processing error, not malformed
-        return 'PROCESSING_ERROR'
-    except json.JSONDecodeError:
-        return 'MALFORMED_JSON'
-    except Exception:
-        return 'UNKNOWN_ERROR'
+
 
 
 def lambda_handler(event, context):
@@ -128,7 +103,7 @@ def lambda_handler(event, context):
             receive_count = int(attributes.get('ApproximateReceiveCount', 0))
             
             # Extract original topic
-            topic = extract_topic_from_source_arn(attributes)
+            topic = extract_topic_from_dlq_attributes(attributes)
             
             # Classify why it ended up in DLQ
             error_type = classify_dlq_error(body)
