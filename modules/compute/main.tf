@@ -75,6 +75,36 @@ variable "archive_bucket" {
   type        = string
 }
 
+variable "checkpoint_table_arn" {
+  description = "Checkpoint DynamoDB table ARN"
+  type        = string
+  default     = ""
+}
+
+variable "checkpoint_table_name" {
+  description = "Checkpoint DynamoDB table name"
+  type        = string
+  default     = "lean-ops-checkpoints"
+}
+
+variable "raw_database" {
+  description = "Glue database name for RAW tables"
+  type        = string
+  default     = "iceberg_raw_db"
+}
+
+variable "curated_database" {
+  description = "Glue database name for Curated tables"
+  type        = string
+  default     = "iceberg_curated_db"
+}
+
+variable "semantic_database" {
+  description = "Glue database name for Semantic tables"
+  type        = string
+  default     = "iceberg_semantic_db"
+}
+
 variable "tags" {
   description = "Common tags"
   type        = map(string)
@@ -102,7 +132,7 @@ data "aws_caller_identity" "current" {}
 
 data "archive_file" "sqs_processor" {
   type        = "zip"
-  source_dir  = "${path.module}/lambda/sqs_processor"
+  source_dir  = "${path.module}/.build/sqs_processor"
   output_path = "${path.module}/.build/sqs_processor.zip"
 }
 
@@ -183,7 +213,7 @@ resource "aws_lambda_function" "sqs_processor" {
 
 data "archive_file" "firehose_transform" {
   type        = "zip"
-  source_dir  = "${path.module}/lambda/firehose_transform"
+  source_dir  = "${path.module}/.build/firehose_transform"
   output_path = "${path.module}/.build/firehose_transform.zip"
 }
 
@@ -235,7 +265,7 @@ resource "aws_lambda_function" "firehose_transform" {
 
 data "archive_file" "check_schema" {
   type        = "zip"
-  source_dir  = "${path.module}/lambda/check_schema"
+  source_dir  = "${path.module}/.build/check_schema"
   output_path = "${path.module}/.build/check_schema.zip"
 }
 
@@ -302,7 +332,7 @@ resource "aws_lambda_function" "check_schema" {
 
 data "archive_file" "dlq_processor" {
   type        = "zip"
-  source_dir  = "${path.module}/lambda/dlq_processor"
+  source_dir  = "${path.module}/.build/dlq_processor"
   output_path = "${path.module}/.build/dlq_processor.zip"
 }
 
@@ -391,7 +421,7 @@ resource "aws_lambda_event_source_mapping" "dlq_trigger" {
 
 data "archive_file" "circuit_breaker" {
   type        = "zip"
-  source_file = "${path.module}/lambda/circuit_breaker/handler.py"
+  source_dir  = "${path.module}/.build/circuit_breaker"
   output_path = "${path.module}/.build/circuit_breaker.zip"
 }
 
@@ -501,3 +531,96 @@ output "circuit_breaker_arn" {
   value       = aws_lambda_function.circuit_breaker.arn
 }
 
+# =============================================================================
+# LAMBDA: GET ALL CHECKPOINTS
+# =============================================================================
+# Single Lambda for Step Function optimization - returns all checkpoints in one call
+
+data "archive_file" "get_all_checkpoints" {
+  type        = "zip"
+  source_dir  = "${path.module}/.build/get_all_checkpoints"
+  output_path = "${path.module}/.build/get_all_checkpoints.zip"
+}
+
+resource "aws_iam_role" "get_all_checkpoints" {
+  name = "${local.name_prefix}-get-all-checkpoints-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy" "get_all_checkpoints" {
+  name = "${local.name_prefix}-get-all-checkpoints-policy"
+  role = aws_iam_role.get_all_checkpoints.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:*:*:*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "glue:GetTable",
+          "glue:GetTables"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:Query"
+        ]
+        Resource = var.checkpoint_table_arn
+      }
+    ]
+  })
+}
+
+resource "aws_lambda_function" "get_all_checkpoints" {
+  filename         = data.archive_file.get_all_checkpoints.output_path
+  function_name    = "${local.name_prefix}-get-all-checkpoints"
+  role             = aws_iam_role.get_all_checkpoints.arn
+  handler          = "handler.lambda_handler"
+  source_code_hash = data.archive_file.get_all_checkpoints.output_base64sha256
+  runtime          = "python3.11"
+  timeout          = 30
+  memory_size      = 128
+
+  environment {
+    variables = {
+      RAW_DATABASE      = var.raw_database
+      CURATED_DATABASE  = var.curated_database
+      SEMANTIC_DATABASE = var.semantic_database
+      CHECKPOINT_TABLE  = var.checkpoint_table_name
+    }
+  }
+
+  tags = local.common_tags
+}
+
+output "get_all_checkpoints_arn" {
+  description = "Get all checkpoints Lambda ARN"
+  value       = aws_lambda_function.get_all_checkpoints.arn
+}
+
+output "get_all_checkpoints_name" {
+  description = "Get all checkpoints Lambda function name"
+  value       = aws_lambda_function.get_all_checkpoints.function_name
+}
