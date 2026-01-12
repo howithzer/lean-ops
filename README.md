@@ -1,96 +1,182 @@
 # Lean-Ops: IoT Event Data Platform
 
-A scalable, fail-aware data platform designed to ingest high-velocity IoT sensor data, process it through resiliency layers, and deliver curated insights via Apache Iceberg arrays.
+A scalable, fail-aware data platform designed to ingest high-velocity IoT sensor data from EKS pods, process through resiliency layers, and deliver curated insights via Apache Iceberg tables.
 
-## Data Flow Architecture
+## Architecture
 
-This platform manages the end-to-end lifecycle of sensor data:
-
-```mermaid
-graph LR
-    %% Sources
-    IoT[IoT Sensors] -->|JSON Events| SQS[SQS Integration]
-
-    %% Ingestion Layer
-    SQS --> Processor[Lambda Processor]
-    Processor --> Firehose[Kinesis Firehose]
-    
-    %% Resilience Path
-    Processor -- Malformed/Error --> DLQ[Dead Letter Queue]
-    DLQ --> DLQProc[DLQ Archiver]
-    DLQProc --> S3Archive[S3 Cold Storage]
-
-    %% Storage Layer (RAW)
-    Firehose --> IcebergRAW[Iceberg RAW Table]
-
-    %% Curation Layer
-    IcebergRAW --> Orchestrator[Step Functions]
-    Orchestrator --> CurateJob[Glue Spark Job]
-    CurateJob --> IcebergCurated[Iceberg Curated Table]
 ```
-
-## System Overview
-
-The system is built on a modular Terraform architecture designed to handle:
-1.  **Ingestion**: High-throughput event buffering via SQS and Kinesis Firehose.
-2.  **Resilience**: Automated handling of bad data (schema drift, malformed payloads) without stopping the pipeline.
-3.  **Storage**: Acid-compliant Apache Iceberg tables on S3 for both raw and curated data.
-4.  **Curation**: Scheduled processing to clean, deduplicate, and aggregate raw sensor data.
+EKS Pods (700+ topics)
+         │
+         ▼
+    SQS Queues (per topic)
+         │
+         ▼
+┌────────────────────────────────────────────────────────────────────┐
+│                    INGESTION LAYER                                   │
+│  ┌──────────────────┐    ┌──────────────────┐    ┌────────────────┐ │
+│  │  SQS Processor   │───▶│    Firehose      │───▶│  Iceberg RAW   │ │
+│  │  Lambda          │    │    (shared)      │    │  Tables        │ │
+│  └────────┬─────────┘    └──────────────────┘    └────────────────┘ │
+│           │                       │                                  │
+│           ▼                       ▼                                  │
+│  ┌──────────────────┐    ┌──────────────────┐                       │
+│  │ Centralized DLQ  │    │ Firehose         │                       │
+│  │                  │    │ Transform Lambda │                       │
+│  └────────┬─────────┘    │ (otfMetadata)    │                       │
+│           │              └──────────────────┘                       │
+│           ▼                                                          │
+│  ┌──────────────────┐                                               │
+│  │  DLQ Processor   │───▶ S3 Archive + DynamoDB                     │
+│  └──────────────────┘                                               │
+└────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌────────────────────────────────────────────────────────────────────┐
+│                    CURATION LAYER (Step Functions)                   │
+│  GetAllCheckpoints → Glue Job → Update Checkpoint                    │
+│  ┌──────────────────┐    ┌──────────────────┐                       │
+│  │ Curated Layer    │    │ Semantic Layer   │                       │
+│  │ (auto-evolving)  │    │ (governed)       │                       │
+│  └──────────────────┘    └──────────────────┘                       │
+└────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+    Snowflake (External Managed Iceberg Table)
+```
 
 ## Key Features
 
+### Multi-Topic Routing
+- Single shared Firehose stream handles 700+ topics
+- Lambda Transform adds `otfMetadata` to route to correct Iceberg table
+- Topic extracted from SQS queue ARN
+
 ### Fail-Aware Processing
-The pipeline implements a "fail-aware" pattern to ensure data integrity:
-- **Schema Drift Tolerance**: Unexpected fields in IoT payloads are captured in a generic `json_payload` column instead of causing failures.
-- **Error Routing**: Malformed data is dropped immediately; transient errors are retried; persistent failures are routed to a DLQ and archived to S3.
-- **Circuit Breaking**: Automated mechanisms pause ingestion if error rates exceed safety thresholds (e.g., >50%).
+| Error Type | Action | Outcome |
+|------------|--------|---------|
+| Malformed JSON | DROP | Logged, not retried |
+| Throttling | RETRY | Exponential backoff |
+| Unknown | RETRY → DLQ | Archived to S3 |
 
-### Modular Infrastructure
-The codebase is organized into granular Terraform modules:
+### Circuit Breaker
+- CloudWatch alarm on error rate > 50%
+- Lambda auto-disables SQS event source mapping
+- Prevents cascading failures
 
-| Module | Description |
-|--------|-------------|
-| `modules/ingestion` | Kinesis Firehose delivery streams and buffering configuration |
-| `modules/compute` | Lambda functions for signal processing and error handling |
-| `modules/messaging` | SQS queues for per-topic event buffering |
-| `modules/catalog` | Glue Data Catalog and Iceberg table definitions |
-| `modules/orchestration` | Step Functions for managing curation workflows |
-| `modules/observability` | CloudWatch alarms and SNS notification topics |
+### Common Library
+All Lambdas share utilities via `lambda/common/`:
+- `topic_utils.py` - Extract topic from ARNs
+- `error_classification.py` - DROP/RETRY logic
+- `aws_clients.py` - Lazy boto3 client factories
+- `checkpoint_utils.py` - Iceberg/DynamoDB queries
+
+## Terraform Modules
+
+| Module | Resources |
+|--------|-----------|
+| `compute` | Lambdas (SQS Processor, Firehose Transform, DLQ Processor, Circuit Breaker, GetAllCheckpoints) |
+| `ingestion` | Kinesis Firehose, CloudWatch Logs |
+| `messaging` | SQS queues, Centralized DLQ |
+| `catalog` | Glue Database, Iceberg tables |
+| `state` | DynamoDB (checkpoints, locks, error_tracker) |
+| `storage` | S3 bucket references |
+| `orchestration` | Step Functions, EventBridge schedules |
+| `observability` | CloudWatch alarms, SNS topics |
 
 ## Deployment
 
 ### Prerequisites
 - Terraform >= 1.5
-- AWS CLI configured
+- AWS CLI configured with profile `terraform-firehose`
+- S3 buckets pre-created: `lean-ops-development-iceberg`, `lean-ops-development-schemas`
 
 ### Quick Start
 
-1.  **Configure Environment**
-    ```bash
-    cp environments/dev.tfvars environments/prod.tfvars
-    # Edit variables (account_id, region, buckets)
-    ```
+```bash
+# 1. Build Lambda packages (includes common library)
+./scripts/build_lambdas.sh
 
-2.  **Deploy Modules**
-    ```bash
-    terraform init
-    terraform apply -var-file="environments/prod.tfvars"
-    ```
+# 2. Initialize Terraform
+terraform init
 
-3.  **Verify Ingestion**
-    Use the included data injector to simulate IoT traffic:
-    ```bash
-    python3 tools/data_injector/main.py --config tests/configs/happy_path.json
-    ```
+# 3. Deploy
+AWS_PROFILE=terraform-firehose terraform apply -var-file="environments/dev.tfvars"
 
-## Operations
+# 4. Destroy (when done)
+AWS_PROFILE=terraform-firehose terraform destroy -var-file="environments/dev.tfvars"
+```
 
-### Monitoring
-- **Dashboards**: CloudWatch metrics for Ingestion Lag (SQS) and Delivery Latency (Firehose).
-- **Alerts**: Notifications for DLQ non-empty status and high error rates.
+### Environment Variables
 
-### Error Handling
-- **Recoverable Errors**: Automatically retried with exponential backoff.
-- **Poison Messages**: Archived to `s3://.../dlq-archive/` for offline analysis and replay.
+| Variable | Description |
+|----------|-------------|
+| `project_name` | Resource name prefix |
+| `environment` | dev/staging/prod |
+| `topics` | List of topic names |
+| `iceberg_bucket` | S3 bucket for Iceberg data |
+| `schema_bucket` | S3 bucket for schema files |
 
+## Testing
 
+### Unit Tests
+```bash
+# Create venv and install pytest
+python3 -m venv .venv
+source .venv/bin/activate
+pip install pytest boto3 moto
+
+# Run tests
+pytest tests/test_common.py -v
+```
+
+### Integration Tests
+See `tests/TEST_PLAN.md` for end-to-end test scenarios.
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| `docs/RELEASE_NOTES.md` | Version history (Wave 1-3) |
+| `docs/ROADMAP.md` | Upcoming features (Wave 4-6) |
+| `docs/operations_plan.md` | Operational runbook |
+| `docs/layer_definitions.md` | RAW/Curated/Semantic layer specs |
+| `architecture_feedback/comprehensive_feedback.md` | Step Function design |
+| `architecture_feedback/snowflake_iceberg_recommendation.md` | Snowflake integration guide |
+
+## Repository Structure
+
+```
+lean-ops/
+├── main.tf                    # Root module
+├── environments/
+│   └── dev.tfvars            # Environment config
+├── modules/
+│   ├── compute/
+│   │   ├── main.tf
+│   │   └── lambda/
+│   │       ├── common/       # Shared utilities
+│   │       ├── sqs_processor/
+│   │       ├── firehose_transform/
+│   │       ├── dlq_processor/
+│   │       ├── circuit_breaker/
+│   │       └── get_all_checkpoints/
+│   ├── ingestion/
+│   ├── messaging/
+│   ├── catalog/
+│   ├── state/
+│   ├── storage/
+│   ├── orchestration/
+│   └── observability/
+├── scripts/
+│   └── build_lambdas.sh      # Lambda packaging
+├── tests/
+│   ├── test_common.py        # Unit tests
+│   └── TEST_PLAN.md
+└── docs/
+    ├── RELEASE_NOTES.md
+    └── ROADMAP.md
+```
+
+## License
+
+Internal use only.
