@@ -1,174 +1,158 @@
 # Lean-Ops: Test Plan
 
-## Test Suite Overview
+## Test Categories
 
-| Test | Scenario | Curated Expectation | Semantic Expectation |
-|------|----------|---------------------|----------------------|
-| 01 | Happy Path | ✅ All records | ✅ All records |
-| 02 | Network Duplicates | ✅ FIFO dedup | ✅ FIFO dedup |
-| 03 | Business Corrections | ✅ LIFO dedup | ✅ LIFO dedup |
-| 04 | Drift: Add Columns | ✅ Auto-add cols | ✅ Log drift only |
-| 05 | Drift: Type Changes | ✅ All STRING | ❌ May fail on cast |
-| 06 | CDE Violations | ✅ All records | ⚠️ Errors to table |
-| 07 | Combined | ✅ All processed | ✅ Schema cols only |
+| Category | Description | Status |
+|----------|-------------|--------|
+| Unit Tests | Common library functions | ✅ Ready |
+| Integration Tests | Lambda handlers with mocked AWS | 🔄 In Progress |
+| End-to-End Tests | Full pipeline with live AWS | 📋 Planned |
 
 ---
 
-## Test Execution
+## Unit Tests
 
-### Prerequisites
+### `tests/test_common.py`
 
-1. **Data Generator** is at:
-   ```
-   /Users/sagarm/Documents/Projects/Huntington_Exercises/Testing_Framework_EEH_2.0/sample-data-generator
-   ```
+Tests the common library modules:
 
-2. **Activate venv**:
-   ```bash
-   cd /Users/sagarm/Documents/Projects/Huntington_Exercises/Testing_Framework_EEH_2.0/sample-data-generator
-   source .venv/bin/activate
-   ```
+| Module | Test Count | Coverage |
+|--------|------------|----------|
+| `topic_utils` | 7 tests | Topic extraction from ARNs |
+| `error_classification` | 11 tests | DROP/RETRY classification |
+| `aws_clients` | 4 tests | Client caching and cleanup |
+| `checkpoint_utils` | 2 tests | CheckpointData structure |
 
-### Generate Test Data
+### Run Tests
 
 ```bash
-# Test 01: Happy Path
-python -m data_injector.main --config ../../lean-ops/tests/configs/test_01_happy_path.json
+# Install dependencies
+pip install pytest moto boto3
 
-# Test 02: Network Duplicates
-python -m data_injector.main --config ../../lean-ops/tests/configs/test_02_network_duplicates.json
+# Run all unit tests
+pytest tests/test_common.py -v
 
-# Test 03: Business Corrections
-python -m data_injector.main --config ../../lean-ops/tests/configs/test_03_business_corrections.json
-
-# ... etc
+# Run with coverage
+pytest tests/test_common.py -v --cov=modules/compute/lambda/common
 ```
 
 ---
 
-## Test Case Details
+## Integration Tests (Planned)
 
-### Test 01: Happy Path
+### Test Scenarios
 
-**Input**: 500 records, no duplicates, no drift
+| Test | Input | Expected Output |
+|------|-------|-----------------|
+| SQS Processor Happy Path | Valid SQS event | Firehose batch sent |
+| SQS Processor Malformed JSON | Invalid JSON body | DROP, no failure |
+| SQS Processor Throttling | Firehose throttle error | RETRY, batchItemFailures |
+| DLQ Processor | DLQ message | S3 archive + DynamoDB log |
+| GetAllCheckpoints | Topic name | Checkpoint data returned |
 
-**Assertions**:
-- RAW count = 500
-- Curated count = 500
-- Semantic count = 500
-- No errors in errors table
+### Mock Setup
 
----
+```python
+from moto import mock_dynamodb, mock_s3, mock_firehose
 
-### Test 02: Network Duplicates (FIFO)
-
-**Input**: 500 records, 30% duplicates on `messageId`
-
-**Assertions**:
-- RAW count = ~650 (includes dupes)
-- Curated count = 500 (dupes removed, FIRST wins)
-- Semantic count = 500
-- Same `message_id` → same `ingestion_ts` (first one kept)
-
----
-
-### Test 03: Business Corrections (LIFO)
-
-**Input**: 500 records, 20% corrections on `idempotencyKeyResource`
-
-**Assertions**:
-- After FIFO dedup: ~500
-- After LIFO dedup: ~400 (corrections applied)
-- Same `idempotency_key` → LAST `ingestion_ts` kept
-- Payload reflects latest correction
+@mock_dynamodb
+@mock_s3
+def test_dlq_processor_archives_to_s3():
+    # Setup mock S3 bucket
+    s3 = boto3.client('s3', region_name='us-east-1')
+    s3.create_bucket(Bucket='test-bucket')
+    
+    # Setup mock DynamoDB table
+    dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
+    dynamodb.create_table(...)
+    
+    # Test handler
+    from dlq_processor.handler import lambda_handler
+    result = lambda_handler(event, context)
+    assert result['processed'] == 1
+```
 
 ---
 
-### Test 04: Schema Drift - Add Columns
+## End-to-End Tests
 
-**Input**: 500 records, 30% with new columns
+### E2E Test Suite
 
-**Assertions**:
-- **Curated**: New columns added via DDL
-- **Semantic**: Drift logged to `drift_log`, no new columns
-- Both succeed
+| Test | Description | Data Generator Config |
+|------|-------------|----------------------|
+| 01: Happy Path | 500 records, no duplicates | `test_01_happy_path.json` |
+| 02: Network Duplicates | 30% duplicate messageId | `test_02_network_duplicates.json` |
+| 03: Business Corrections | 20% corrections on idempotency_key | `test_03_business_corrections.json` |
+| 04: Schema Drift | 30% with new columns | `test_04_schema_drift.json` |
+| 05: Error Handling | 10% malformed JSON | `test_05_error_handling.json` |
 
----
-
-### Test 05: Schema Drift - Type Changes
-
-**Input**: 500 records, 50% with type changes (int→string, etc.)
-
-**Assertions**:
-- **Curated**: ✅ Success (all STRING, no type issues)
-- **Semantic**: ❌ May fail on CAST errors
-- Tiered outcome: `CURATED_ONLY`
-
----
-
-### Test 06: CDE Violations
-
-**Input**: 500 records, 20% missing required CDEs
-
-**Assertions**:
-- **Curated**: 500 records (CDEs not enforced)
-- **Semantic**: ~400 valid, ~100 in errors table
-- errors table has `error_type = 'CDE_VIOLATION'`
-
----
-
-### Test 07: Combined Scenario
-
-**Input**: 1000 records with duplicates + drift
-
-**Assertions**:
-- Dedup reduces count
-- Curated has all columns (including new ones)
-- Semantic has schema columns only
-- Full success expected
-
----
-
-## Validation Queries
+### Validation Queries
 
 ```sql
 -- RAW count
 SELECT COUNT(*) FROM iceberg_raw_db.events_staging;
 
--- Curated count
-SELECT COUNT(*) FROM curated_db.events;
+-- DLQ archived messages
+SELECT COUNT(*) FROM aws_s3.access_bucket('lean-ops-dev-iceberg', 'dlq-archive/events/');
 
--- Semantic count
-SELECT COUNT(*) FROM semantic_db.events;
-
--- Errors count
-SELECT COUNT(*) FROM semantic_db.errors WHERE topic_name = 'events';
-
--- Drift log
-SELECT * FROM semantic_db.drift_log WHERE topic_name = 'events' ORDER BY detected_at DESC;
-
--- Check dedup worked (should be unique)
-SELECT message_id, COUNT(*) 
-FROM curated_db.events 
-GROUP BY message_id 
-HAVING COUNT(*) > 1;
-
--- Check LIFO (latest correction wins)
-SELECT idempotency_key, MAX(curated_ts) 
-FROM curated_db.events 
-GROUP BY idempotency_key;
+-- Error tracker
+SELECT * FROM lean_ops_error_tracker WHERE topic_name = 'events';
 ```
 
 ---
 
-## Checkpoint Verification
+## Error Classification Matrix
 
-```sql
--- Check independent checkpoints
-SELECT * FROM lean_ops_checkpoints 
-WHERE topic_name = 'events';
+| Error Type | Action | Test Case |
+|------------|--------|-----------|
+| `JSONDecodeError` | DROP | Malformed JSON body |
+| `Expecting value` | DROP | Empty payload |
+| `KeyError` | DROP | Missing required field |
+| `ProvisionedThroughputExceededException` | RETRY | Firehose throttle |
+| `Connection timed out` | RETRY | Network timeout |
+| `Unknown error` | RETRY | Unclassified error |
 
--- After Test 05 (type changes causing semantic failure):
--- curated_checkpoint = updated
--- semantic_checkpoint = NOT updated
+---
+
+## CI/CD Integration
+
+### GitHub Actions Test Job
+
+```yaml
+test:
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    - name: Install dependencies
+      run: pip install pytest moto boto3
+    - name: Run tests
+      run: pytest tests/ -v --junitxml=test-results.xml
+    - name: Upload results
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-results
+        path: test-results.xml
+```
+
+---
+
+## Test Data Generator
+
+The data generator is located at:
+```
+/Users/sagarm/Documents/Projects/Huntington_Exercises/Testing_Framework_EEH_2.0/sample-data-generator
+```
+
+### Generate Test Data
+
+```bash
+cd /Users/sagarm/Documents/Projects/Huntington_Exercises/Testing_Framework_EEH_2.0/sample-data-generator
+source .venv/bin/activate
+
+# Test 01: Happy Path
+python -m data_injector.main --config ../../lean-ops/tests/configs/test_01_happy_path.json
 ```

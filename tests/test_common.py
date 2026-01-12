@@ -2,10 +2,26 @@
 Unit tests for common library.
 
 Run with: pytest tests/test_common.py -v
+
+Requires:
+  - pytest
+  - moto (for AWS mocking)
 """
 import pytest
 import json
+import sys
+import os
 
+# Add common library to path BEFORE imports
+common_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+lambda_path = os.path.join(common_path, 'modules', 'compute', 'lambda')
+if lambda_path not in sys.path:
+    sys.path.insert(0, lambda_path)
+
+
+# =============================================================================
+# TESTS: topic_utils
+# =============================================================================
 
 class TestTopicUtils:
     """Tests for topic_utils module."""
@@ -24,11 +40,23 @@ class TestTopicUtils:
         arn = "arn:aws:sqs:us-west-2:999999999999:lean-ops-prod-orders-queue"
         assert extract_topic_from_arn(arn) == "orders"
     
+    def test_extract_topic_from_payment_arn(self):
+        """Test extracting payment topic."""
+        from common.topic_utils import extract_topic_from_arn
+        
+        arn = "arn:aws:sqs:us-east-1:123456789012:lean-ops-dev-payments-queue"
+        assert extract_topic_from_arn(arn) == "payments"
+    
     def test_extract_topic_from_empty_arn(self):
         """Test handling empty ARN."""
         from common.topic_utils import extract_topic_from_arn
         
         assert extract_topic_from_arn("") == "unknown"
+    
+    def test_extract_topic_from_none_arn(self):
+        """Test handling None ARN."""
+        from common.topic_utils import extract_topic_from_arn
+        
         assert extract_topic_from_arn(None) == "unknown"
     
     def test_extract_topic_from_dlq_attributes(self):
@@ -47,6 +75,10 @@ class TestTopicUtils:
         assert extract_topic_from_dlq_attributes({}) == "unknown"
 
 
+# =============================================================================
+# TESTS: error_classification
+# =============================================================================
+
 class TestErrorClassification:
     """Tests for error_classification module."""
     
@@ -60,6 +92,26 @@ class TestErrorClassification:
         assert result.action == ErrorAction.DROP
         assert result.error_type == "MALFORMED_JSON"
     
+    def test_classify_json_expecting_property(self):
+        """Test 'expecting property' errors are classified as DROP."""
+        from common.error_classification import classify_error, ErrorAction
+        
+        error = Exception("Expecting property name enclosed in double quotes")
+        result = classify_error(error)
+        
+        assert result.action == ErrorAction.DROP
+        assert result.error_type == "MALFORMED_JSON"
+    
+    def test_classify_key_error(self):
+        """Test KeyError is classified as DROP."""
+        from common.error_classification import classify_error, ErrorAction
+        
+        error = KeyError("missing_field")
+        result = classify_error(error)
+        
+        assert result.action == ErrorAction.DROP
+        assert result.error_type == "INVALID_CONTRACT"
+    
     def test_classify_throttle_error(self):
         """Test throttle errors are classified as RETRY."""
         from common.error_classification import classify_error, ErrorAction
@@ -70,11 +122,31 @@ class TestErrorClassification:
         assert result.action == ErrorAction.RETRY
         assert result.error_type == "THROTTLE"
     
+    def test_classify_capacity_error(self):
+        """Test capacity errors are classified as RETRY."""
+        from common.error_classification import classify_error, ErrorAction
+        
+        error = Exception("Insufficient capacity for the delivery stream")
+        result = classify_error(error)
+        
+        assert result.action == ErrorAction.RETRY
+        assert result.error_type == "THROTTLE"
+    
     def test_classify_timeout_error(self):
         """Test timeout errors are classified as RETRY."""
         from common.error_classification import classify_error, ErrorAction
         
         error = Exception("Connection timed out after 30 seconds")
+        result = classify_error(error)
+        
+        assert result.action == ErrorAction.RETRY
+        assert result.error_type == "TIMEOUT"
+    
+    def test_classify_connection_error(self):
+        """Test connection errors are classified as RETRY."""
+        from common.error_classification import classify_error, ErrorAction
+        
+        error = Exception("Could not connect to endpoint")
         result = classify_error(error)
         
         assert result.action == ErrorAction.RETRY
@@ -103,7 +175,18 @@ class TestErrorClassification:
         
         body = "not valid json"
         assert classify_dlq_error(body) == "MALFORMED_JSON"
+    
+    def test_classify_dlq_error_empty_body(self):
+        """Test DLQ error classification for empty body."""
+        from common.error_classification import classify_dlq_error
+        
+        body = ""
+        assert classify_dlq_error(body) == "MALFORMED_JSON"
 
+
+# =============================================================================
+# TESTS: aws_clients
+# =============================================================================
 
 class TestAwsClients:
     """Tests for aws_clients module."""
@@ -120,8 +203,30 @@ class TestAwsClients:
         
         assert client1 is client2
     
+    def test_firehose_client_caching(self):
+        """Test Firehose client caching."""
+        from common.aws_clients import get_firehose_client, clear_client_cache
+        
+        clear_client_cache()
+        
+        client1 = get_firehose_client()
+        client2 = get_firehose_client()
+        
+        assert client1 is client2
+    
+    def test_dynamodb_resource_caching(self):
+        """Test DynamoDB resource caching."""
+        from common.aws_clients import get_dynamodb_resource, clear_client_cache
+        
+        clear_client_cache()
+        
+        resource1 = get_dynamodb_resource()
+        resource2 = get_dynamodb_resource()
+        
+        assert resource1 is resource2
+    
     def test_clear_cache(self):
-        """Test cache clearing."""
+        """Test cache clearing creates new instances."""
         from common.aws_clients import get_s3_client, clear_client_cache
         
         client1 = get_s3_client()
@@ -129,19 +234,50 @@ class TestAwsClients:
         client2 = get_s3_client()
         
         # After clearing, should be a new instance
-        # (In real boto3, this creates a new client)
         assert client1 is not client2
 
 
-# Conftest for path setup
-@pytest.fixture(autouse=True)
-def setup_path():
-    """Add common library to path."""
-    import sys
-    import os
+# =============================================================================
+# TESTS: checkpoint_utils (basic structure tests)
+# =============================================================================
+
+class TestCheckpointUtils:
+    """Tests for checkpoint_utils module."""
     
-    common_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    lambda_path = os.path.join(common_path, 'modules', 'compute', 'lambda')
+    def test_checkpoint_data_structure(self):
+        """Test CheckpointData dataclass structure."""
+        from common.checkpoint_utils import CheckpointData
+        
+        data = CheckpointData(
+            raw_snapshot="snap-001",
+            curated_checkpoint="snap-000",
+            semantic_checkpoint="snap-000",
+            schema_exists=True
+        )
+        
+        assert data.raw_snapshot == "snap-001"
+        assert data.curated_checkpoint == "snap-000"
+        assert data.semantic_checkpoint == "snap-000"
+        assert data.schema_exists is True
     
-    if lambda_path not in sys.path:
-        sys.path.insert(0, lambda_path)
+    def test_checkpoint_data_with_none(self):
+        """Test CheckpointData with None values."""
+        from common.checkpoint_utils import CheckpointData
+        
+        data = CheckpointData(
+            raw_snapshot=None,
+            curated_checkpoint=None,
+            semantic_checkpoint=None,
+            schema_exists=False
+        )
+        
+        assert data.raw_snapshot is None
+        assert data.schema_exists is False
+
+
+# =============================================================================
+# RUN TESTS
+# =============================================================================
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
