@@ -180,6 +180,7 @@ module "compute" {
   error_tracker_table_name = module.state.error_tracker_table_name
   schema_bucket            = var.schema_bucket
   archive_bucket           = var.iceberg_bucket  # Reuse Iceberg bucket for DLQ archive
+  checkpoint_table_arn     = module.state.checkpoints_table_arn
   tags                     = local.common_tags
 
   depends_on = [module.messaging, module.state]
