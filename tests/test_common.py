@@ -191,8 +191,9 @@ class TestErrorClassification:
 class TestAwsClients:
     """Tests for aws_clients module."""
     
-    def test_client_caching(self):
+    def test_client_caching(self, monkeypatch):
         """Test that clients are cached (same instance returned)."""
+        monkeypatch.setenv('AWS_DEFAULT_REGION', 'us-east-1')
         from common.aws_clients import get_s3_client, clear_client_cache
         
         # Clear cache first
@@ -203,8 +204,9 @@ class TestAwsClients:
         
         assert client1 is client2
     
-    def test_firehose_client_caching(self):
+    def test_firehose_client_caching(self, monkeypatch):
         """Test Firehose client caching."""
+        monkeypatch.setenv('AWS_DEFAULT_REGION', 'us-east-1')
         from common.aws_clients import get_firehose_client, clear_client_cache
         
         clear_client_cache()
@@ -214,8 +216,9 @@ class TestAwsClients:
         
         assert client1 is client2
     
-    def test_dynamodb_resource_caching(self):
+    def test_dynamodb_resource_caching(self, monkeypatch):
         """Test DynamoDB resource caching."""
+        monkeypatch.setenv('AWS_DEFAULT_REGION', 'us-east-1')
         from common.aws_clients import get_dynamodb_resource, clear_client_cache
         
         clear_client_cache()
@@ -225,8 +228,9 @@ class TestAwsClients:
         
         assert resource1 is resource2
     
-    def test_clear_cache(self):
+    def test_clear_cache(self, monkeypatch):
         """Test cache clearing creates new instances."""
+        monkeypatch.setenv('AWS_DEFAULT_REGION', 'us-east-1')
         from common.aws_clients import get_s3_client, clear_client_cache
         
         client1 = get_s3_client()

@@ -128,6 +128,64 @@ jobs:
 
 ---
 
+## Wave 7: Iceberg Table Maintenance
+
+Based on [11 Apache Iceberg Cost Reduction Strategies](https://overcast.blog/11-apache-iceberg-cost-reduction-strategies-you-should-know-8de7acb14151).
+
+### Maintenance Operations
+
+| Operation | Frequency | Scope |
+|-----------|-----------|-------|
+| `expire_snapshots` | Daily | Retain last 20, older than 7 days |
+| `rewrite_manifests` | Daily | Per table |
+| `remove_orphan_files` | Weekly | Older than 72 hours |
+| `rewrite_data_files` | Daily | Hot partitions (last 7 days) |
+| `rewrite_position_delete_files` | Weekly | After MERGE operations |
+
+### Maintenance Lambda/Job
+
+```python
+# Athena DDL for maintenance (scheduled via EventBridge)
+CALL spark_catalog.system.expire_snapshots(
+  table => 'iceberg_raw_db.{topic}_staging',
+  options => map('retain-last', '20')
+);
+
+CALL spark_catalog.system.rewrite_manifests(
+  table => 'iceberg_raw_db.{topic}_staging'
+);
+
+CALL spark_catalog.system.remove_orphan_files(
+  table => 'iceberg_raw_db.{topic}_staging',
+  options => map('older-than', '72 hours')
+);
+```
+
+### Health Monitoring Queries
+
+```sql
+-- Manifest count (planning overhead)
+SELECT COUNT(*) AS manifests FROM {table}.manifests;
+
+-- Small file ratio
+SELECT SUM(CASE WHEN file_size_in_bytes < 67108864 THEN 1 ELSE 0 END) * 1.0 / COUNT(*)
+FROM {table}.files WHERE content = 0;
+
+-- Delete file count
+SELECT COUNT(*) FROM {table}.files WHERE content IN (1, 2);
+```
+
+### Table Properties to Set
+
+```sql
+ALTER TABLE iceberg_raw_db.events_staging SET TBLPROPERTIES (
+  'write.target-file-size-bytes' = '268435456',  -- 256 MB
+  'write.distribution-mode' = 'range'
+);
+```
+
+---
+
 ## Production Readiness Checklist
 
 - [x] Error classification (DROP/RETRY)
@@ -142,3 +200,6 @@ jobs:
 - [ ] Remote Terraform state (S3 + DynamoDB)
 - [ ] Least-privilege IAM policies
 - [ ] CI/CD pipeline
+- [ ] Iceberg table maintenance automation
+- [ ] Table health monitoring dashboards
+

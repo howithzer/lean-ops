@@ -42,6 +42,11 @@ def classify_error(error: Exception) -> ErrorClassification:
         ErrorClassification(action=RETRY, error_type='THROTTLE', ...)
     """
     error_msg = str(error).lower()
+    error_type_name = type(error).__name__.lower()
+    
+    # DROP: KeyError - missing required field
+    if isinstance(error, KeyError):
+        return ErrorClassification(ErrorAction.DROP, 'INVALID_CONTRACT', str(error))
     
     # DROP: Malformed data - retrying won't help
     if any(x in error_msg for x in ['json', 'decode', 'expecting value', 'expecting property']):
@@ -54,7 +59,7 @@ def classify_error(error: Exception) -> ErrorClassification:
     if any(x in error_msg for x in ['throttl', 'provision', 'capacity']):
         return ErrorClassification(ErrorAction.RETRY, 'THROTTLE', str(error))
     
-    if any(x in error_msg for x in ['timeout', 'timed out', 'connection']):
+    if any(x in error_msg for x in ['timeout', 'timed out', 'connection', 'connect']):
         return ErrorClassification(ErrorAction.RETRY, 'TIMEOUT', str(error))
     
     # Default: RETRY - let SQS retry → eventually DLQ

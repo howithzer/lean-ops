@@ -1,0 +1,151 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "STSGetCaller",
+            "Effect": "Allow",
+            "Action": "sts:GetCallerIdentity",
+            "Resource": "*"
+        },
+        {
+            "Sid": "CloudWatchAlarmsAccess",
+            "Effect": "Allow",
+            "Action": [
+                "cloudwatch:PutMetricAlarm",
+                "cloudwatch:DeleteAlarms",
+                "cloudwatch:DescribeAlarms",
+                "cloudwatch:ListTagsForResource",
+                "cloudwatch:TagResource"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "LambdaTagResource",
+            "Effect": "Allow",
+            "Action": [
+                "lambda:TagResource",
+                "lambda:ListTags"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "StepFunctionsValidation",
+            "Effect": "Allow",
+            "Action": "states:ValidateStateMachineDefinition",
+            "Resource": "*"
+        },
+        {
+            "Sid": "LambdaEventSourceMapping",
+            "Effect": "Allow",
+            "Action": [
+                "lambda:CreateEventSourceMapping",
+                "lambda:DeleteEventSourceMapping",
+                "lambda:GetEventSourceMapping",
+                "lambda:UpdateEventSourceMapping",
+                "lambda:ListEventSourceMappings"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "S3Buckets",
+            "Effect": "Allow",
+            "Action": "s3:*",
+            "Resource": [
+                "arn:aws:s3:::lean-ops-*",
+                "arn:aws:s3:::lean-ops-*/*"
+            ]
+        },
+        {
+            "Sid": "SQS",
+            "Effect": "Allow",
+            "Action": "sqs:*",
+            "Resource": "arn:aws:sqs:us-east-1:487500748616:lean-ops-*"
+        },
+        {
+            "Sid": "Firehose",
+            "Effect": "Allow",
+            "Action": "firehose:*",
+            "Resource": "arn:aws:firehose:us-east-1:487500748616:deliverystream/lean-ops-*"
+        },
+        {
+            "Sid": "Glue",
+            "Effect": "Allow",
+            "Action": "glue:*",
+            "Resource": [
+                "arn:aws:glue:us-east-1:487500748616:catalog",
+                "arn:aws:glue:us-east-1:487500748616:database/*",
+                "arn:aws:glue:us-east-1:487500748616:table/*/*",
+                "arn:aws:glue:us-east-1:487500748616:userDefinedFunction/*/*",
+                "arn:aws:glue:us-east-1:487500748616:job/lean-ops-*",
+                "arn:aws:glue:us-east-1:487500748616:trigger/lean-ops-*"
+            ]
+        },
+        {
+            "Sid": "Lambda",
+            "Effect": "Allow",
+            "Action": "lambda:*",
+            "Resource": "arn:aws:lambda:us-east-1:487500748616:function:lean-ops-*"
+        },
+        {
+            "Sid": "DynamoDB",
+            "Effect": "Allow",
+            "Action": "dynamodb:*",
+            "Resource": "arn:aws:dynamodb:us-east-1:487500748616:table/lean-ops-*"
+        },
+        {
+            "Sid": "StepFunctions",
+            "Effect": "Allow",
+            "Action": "states:*",
+            "Resource": "arn:aws:states:us-east-1:487500748616:stateMachine:lean-ops-*"
+        },
+        {
+            "Sid": "CloudWatchLogs",
+            "Effect": "Allow",
+            "Action": "logs:*",
+            "Resource": "arn:aws:logs:us-east-1:487500748616:log-group:*lean-ops*"
+        },
+        {
+            "Sid": "SNS",
+            "Effect": "Allow",
+            "Action": "sns:*",
+            "Resource": "arn:aws:sns:us-east-1:487500748616:lean-ops-*"
+        },
+        {
+            "Sid": "Athena",
+            "Effect": "Allow",
+            "Action": "athena:*",
+            "Resource": [
+                "arn:aws:athena:us-east-1:487500748616:workgroup/*",
+                "arn:aws:athena:us-east-1:487500748616:datacatalog/*"
+            ]
+        },
+        {
+            "Sid": "IAMRolesForProject",
+            "Effect": "Allow",
+            "Action": [
+                "iam:CreateRole",
+                "iam:DeleteRole",
+                "iam:GetRole",
+                "iam:UpdateRole",
+                "iam:TagRole",
+                "iam:UntagRole",
+                "iam:ListRolePolicies",
+                "iam:ListAttachedRolePolicies",
+                "iam:ListInstanceProfilesForRole",
+                "iam:AttachRolePolicy",
+                "iam:DetachRolePolicy",
+                "iam:PutRolePolicy",
+                "iam:DeleteRolePolicy",
+                "iam:GetRolePolicy",
+                "iam:PassRole"
+            ],
+            "Resource": "arn:aws:iam::487500748616:role/lean-ops-*"
+        },
+        {
+            "Sid": "EventBridge",
+            "Effect": "Allow",
+            "Action": "events:*",
+            "Resource": "arn:aws:events:us-east-1:487500748616:rule/lean-ops-*"
+        }
+    ]
+}
