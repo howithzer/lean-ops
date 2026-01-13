@@ -624,3 +624,86 @@ output "get_all_checkpoints_name" {
   description = "Get all checkpoints Lambda function name"
   value       = aws_lambda_function.get_all_checkpoints.function_name
 }
+
+# =============================================================================
+# UPDATE CHECKPOINT LAMBDA
+# =============================================================================
+
+data "archive_file" "update_checkpoint" {
+  type        = "zip"
+  source_dir  = "${path.module}/.build/update_checkpoint"
+  output_path = "${path.module}/.build/update_checkpoint.zip"
+}
+
+resource "aws_iam_role" "update_checkpoint" {
+  name = "${local.name_prefix}-update-checkpoint-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy" "update_checkpoint" {
+  name = "${local.name_prefix}-update-checkpoint-policy"
+  role = aws_iam_role.update_checkpoint.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:*:*:*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:UpdateItem",
+          "dynamodb:PutItem"
+        ]
+        Resource = var.checkpoint_table_arn
+      }
+    ]
+  })
+}
+
+resource "aws_lambda_function" "update_checkpoint" {
+  filename         = data.archive_file.update_checkpoint.output_path
+  function_name    = "${local.name_prefix}-update-checkpoint"
+  role             = aws_iam_role.update_checkpoint.arn
+  handler          = "handler.lambda_handler"
+  source_code_hash = data.archive_file.update_checkpoint.output_base64sha256
+  runtime          = "python3.11"
+  timeout          = 30
+  memory_size      = 128
+
+  environment {
+    variables = {
+      CHECKPOINT_TABLE = var.checkpoint_table_name
+    }
+  }
+
+  tags = local.common_tags
+}
+
+output "update_checkpoint_arn" {
+  description = "Update checkpoint Lambda ARN"
+  value       = aws_lambda_function.update_checkpoint.arn
+}
+
+output "update_checkpoint_name" {
+  description = "Update checkpoint Lambda function name"
+  value       = aws_lambda_function.update_checkpoint.function_name
+}
+

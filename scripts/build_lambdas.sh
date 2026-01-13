@@ -23,6 +23,7 @@ LAMBDAS=(
     "get_all_checkpoints"
     "circuit_breaker"
     "check_schema"
+    "update_checkpoint"
 )
 
 echo "Building Lambda packages..."

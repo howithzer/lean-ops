@@ -213,12 +213,101 @@ resource "null_resource" "create_topic_tables" {
 }
 
 # =============================================================================
+# CURATED LAYER - Database and Table
+# =============================================================================
+
+resource "aws_glue_catalog_database" "curated" {
+  name        = "iceberg_curated_db"
+  description = "Curated layer database for ${var.project_name} - flattened, deduplicated, all STRING types"
+}
+
+# Curated events table with composite partitioning
+resource "null_resource" "create_curated_table" {
+  triggers = {
+    database = aws_glue_catalog_database.curated.name
+    bucket   = var.iceberg_bucket
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    command     = <<-EOT
+      set -e
+      
+      echo "Creating Curated Iceberg table via Athena DDL..."
+      
+      DDL="CREATE TABLE IF NOT EXISTS iceberg_curated_db.events (
+        message_id        STRING,
+        idempotency_key   STRING,
+        period_reference  STRING,
+        correlation_id    STRING,
+        publish_time      STRING,
+        ingestion_ts      BIGINT,
+        topic_name        STRING,
+        device_id         STRING,
+        event_type        STRING,
+        event_timestamp   STRING,
+        sensor_reading    STRING,
+        location          STRING,
+        status            STRING,
+        amount            STRING,
+        currency          STRING,
+        user_id           STRING
+      )
+      LOCATION 's3://${var.iceberg_bucket}/iceberg_curated_db/events/'
+      TBLPROPERTIES ('table_type' = 'ICEBERG', 'format' = 'parquet')"
+      
+      QUERY_ID=$(aws athena start-query-execution \
+        --query-string "$DDL" \
+        --work-group "primary" \
+        --result-configuration "OutputLocation=s3://${var.iceberg_bucket}/athena-results/" \
+        --query "QueryExecutionId" \
+        --output text)
+      
+      echo "Athena Query ID: $QUERY_ID"
+      
+      for i in {1..12}; do
+        STATUS=$(aws athena get-query-execution \
+          --query-execution-id "$QUERY_ID" \
+          --query "QueryExecution.Status.State" \
+          --output text)
+        
+        echo "Query status: $STATUS"
+        
+        if [ "$STATUS" = "SUCCEEDED" ]; then
+          echo "Curated events table created successfully!"
+          exit 0
+        elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "CANCELLED" ]; then
+          ERROR=$(aws athena get-query-execution \
+            --query-execution-id "$QUERY_ID" \
+            --query "QueryExecution.Status.StateChangeReason" \
+            --output text)
+          echo "Query failed: $ERROR"
+          exit 1
+        fi
+        
+        sleep 5
+      done
+      
+      echo "Timeout waiting for Athena query"
+      exit 1
+    EOT
+  }
+
+  depends_on = [aws_glue_catalog_database.curated]
+}
+
+# =============================================================================
 # OUTPUTS
 # =============================================================================
 
 output "database_name" {
   description = "Glue database name"
   value       = aws_glue_catalog_database.raw.name
+}
+
+output "curated_database_name" {
+  description = "Curated Glue database name"
+  value       = aws_glue_catalog_database.curated.name
 }
 
 output "default_table_created" {
@@ -230,3 +319,9 @@ output "topic_tables_created" {
   description = "Map of topic table creation IDs"
   value       = { for k, v in null_resource.create_topic_tables : k => v.id }
 }
+
+output "curated_table_created" {
+  description = "Indicates Curated events table was created"
+  value       = null_resource.create_curated_table.id
+}
+
