@@ -98,13 +98,16 @@ resource "aws_glue_job" "unified" {
   }
 
   default_arguments = {
-    "--job-language"                                                     = "python"
-    "--job-bookmark-option"                                              = "job-bookmark-disable"
-    "--enable-metrics"                                                   = "true"
-    "--enable-continuous-cloudwatch-log"                                 = "true"
-    "--TempDir"                                                          = "s3://${var.iceberg_bucket}/glue-temp/"
-    "--datalake-formats"                                                 = "iceberg"
-    "--conf"                                                             = "spark.sql.catalog.glue_catalog=org.apache.iceberg.spark.SparkCatalog --conf spark.sql.catalog.glue_catalog.warehouse=s3://${var.iceberg_bucket}/ --conf spark.sql.catalog.glue_catalog.catalog-impl=org.apache.iceberg.aws.glue.GlueCatalog --conf spark.sql.catalog.glue_catalog.io-impl=org.apache.iceberg.aws.s3.S3FileIO"
+    "--job-language"                     = "python"
+    "--job-bookmark-option"              = "job-bookmark-disable"
+    "--enable-metrics"                   = "true"
+    "--enable-continuous-cloudwatch-log" = "true"
+    "--enable-spark-ui"                  = "true"
+    "--spark-event-logs-path"            = "s3://${var.iceberg_bucket}/glue-temp/spark-logs/"
+    "--TempDir"                          = "s3://${var.iceberg_bucket}/glue-temp/"
+    "--datalake-formats"                 = "iceberg"
+    # Key: IcebergSparkSessionExtensions enables MERGE/UPDATE/DELETE
+    "--conf"                             = "spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions --conf spark.sql.iceberg.handle-timestamp-without-timezone=true"
   }
 
   glue_version      = "4.0"

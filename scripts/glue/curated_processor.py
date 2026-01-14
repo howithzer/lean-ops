@@ -220,12 +220,28 @@ def main():
         df_flattened.writeTo(CURATED_TABLE).using("iceberg").createOrReplace()
         print("Initial data loaded successfully")
     else:
-        # Subsequent runs: Use append for now
-        # NOTE: MERGE requires Iceberg Spark Extensions which aren't working in Glue 4.0
-        # Using append with dedup for MVP testing
-        print("Appending deduplicated data (MERGE not supported in this Glue 4.0 config)")
-        df_flattened.writeTo(CURATED_TABLE).append()
-        print("Append complete")
+        # Subsequent runs: Use MERGE for LIFO dedup on idempotency_key
+        # Requires IcebergSparkSessionExtensions in --conf
+        df_flattened.createOrReplaceTempView("staged_data")
+        
+        columns = df_flattened.columns
+        update_clause = ", ".join([f"t.{c} = s.{c}" for c in columns if c != 'idempotency_key'])
+        insert_cols = ", ".join(columns)
+        insert_vals = ", ".join([f"s.{c}" for c in columns])
+        
+        merge_sql = f"""
+        MERGE INTO {CURATED_TABLE} t
+        USING staged_data s
+        ON t.idempotency_key = s.idempotency_key
+        WHEN MATCHED AND s.publish_time > t.publish_time THEN
+            UPDATE SET {update_clause}
+        WHEN NOT MATCHED THEN
+            INSERT ({insert_cols}) VALUES ({insert_vals})
+        """
+        
+        print("Executing MERGE...")
+        spark.sql(merge_sql)
+        print("MERGE complete")
     
     # Update checkpoint
     update_checkpoint(TOPIC_NAME, max_ingestion_ts)
