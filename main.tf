@@ -180,6 +180,7 @@ module "compute" {
   error_tracker_table_name = module.state.error_tracker_table_name
   schema_bucket            = var.schema_bucket
   archive_bucket           = var.iceberg_bucket  # Reuse Iceberg bucket for DLQ archive
+  iceberg_bucket           = var.iceberg_bucket
   checkpoint_table_arn     = module.state.checkpoints_table_arn
   tags                     = local.common_tags
 
@@ -215,7 +216,7 @@ module "orchestration" {
   topics                  = var.topics
   schedule_expression     = var.semantic_schedule
   iceberg_bucket          = var.iceberg_bucket
-  glue_role_arn           = var.glue_role_arn
+  glue_role_arn           = module.compute.glue_role_arn
   check_schema_lambda_arn = module.compute.check_schema_arn
   alerts_topic_arn        = module.observability.alerts_topic_arn
   tags                    = local.common_tags

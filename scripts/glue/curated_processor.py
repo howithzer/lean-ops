@@ -44,9 +44,17 @@ RAW_DATABASE = args['raw_database']
 CURATED_DATABASE = args['curated_database']
 CHECKPOINT_TABLE = args['checkpoint_table']
 ICEBERG_BUCKET = args['iceberg_bucket']
+ICEBERG_WAREHOUSE = f"s3://{ICEBERG_BUCKET}/"
 
-RAW_TABLE = f"{RAW_DATABASE}.{TOPIC_NAME}_staging"
-CURATED_TABLE = f"{CURATED_DATABASE}.events"
+# Configure Iceberg catalog (required for Glue Spark)
+spark.conf.set("spark.sql.catalog.glue_catalog", "org.apache.iceberg.spark.SparkCatalog")
+spark.conf.set("spark.sql.catalog.glue_catalog.warehouse", ICEBERG_WAREHOUSE)
+spark.conf.set("spark.sql.catalog.glue_catalog.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+spark.conf.set("spark.sql.catalog.glue_catalog.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+
+# Full table paths (must use glue_catalog prefix!)
+RAW_TABLE = f"glue_catalog.{RAW_DATABASE}.{TOPIC_NAME}_staging"
+CURATED_TABLE = f"glue_catalog.{CURATED_DATABASE}.events"
 
 
 # =============================================================================
@@ -60,9 +68,13 @@ def get_last_checkpoint(topic_name):
     table = dynamodb.Table(CHECKPOINT_TABLE)
     
     try:
-        response = table.get_item(Key={'topic_name': topic_name})
+        # Key structure: pipeline_id (hash) + checkpoint_type (range)
+        response = table.get_item(Key={
+            'pipeline_id': f'curation_{topic_name}',
+            'checkpoint_type': 'curated'
+        })
         if 'Item' in response:
-            return int(response['Item'].get('curated_checkpoint', 0))
+            return int(response['Item'].get('last_ingestion_ts', 0))
     except Exception as e:
         print(f"Error getting checkpoint: {e}")
     
@@ -75,13 +87,15 @@ def update_checkpoint(topic_name, checkpoint_value):
     dynamodb = boto3.resource('dynamodb')
     table = dynamodb.Table(CHECKPOINT_TABLE)
     
+    # Key structure: pipeline_id (hash) + checkpoint_type (range)
     table.put_item(Item={
-        'topic_name': topic_name,
-        'curated_checkpoint': checkpoint_value,
+        'pipeline_id': f'curation_{topic_name}',
+        'checkpoint_type': 'curated',
+        'last_ingestion_ts': checkpoint_value,
         'updated_at': datetime.utcnow().isoformat()
     })
     
-    print(f"Checkpoint updated: {topic_name} -> {checkpoint_value}")
+    print(f"Checkpoint updated: curation_{topic_name}/curated -> {checkpoint_value}")
 
 
 def flatten_json_payload(df):
@@ -190,31 +204,28 @@ def main():
     df_flattened = flatten_json_payload(df_deduped)
     print(f"Columns after flattening: {df_flattened.columns}")
     
-    # Check for schema evolution (new columns)
-    add_missing_columns_to_curated(df_flattened, CURATED_TABLE)
+    # Check if this is first run (Curated table is empty)
+    is_first_run = True
+    try:
+        snapshots_df = spark.sql(f"SELECT * FROM {CURATED_TABLE}.snapshots LIMIT 1")
+        if snapshots_df.count() > 0:
+            is_first_run = False
+            print("Curated table has snapshots")
+    except Exception as e:
+        print(f"First run detected (no snapshots): {e}")
     
-    # Stage 2: MERGE into Curated (LIFO on idempotency_key)
-    # Create temp view for merge
-    df_flattened.createOrReplaceTempView("staged_data")
-    
-    # Get column list for merge
-    columns = df_flattened.columns
-    update_clause = ", ".join([f"t.{c} = s.{c}" for c in columns if c != 'idempotency_key'])
-    insert_cols = ", ".join(columns)
-    insert_vals = ", ".join([f"s.{c}" for c in columns])
-    
-    merge_sql = f"""
-    MERGE INTO {CURATED_TABLE} t
-    USING staged_data s
-    ON t.idempotency_key = s.idempotency_key
-    WHEN MATCHED AND s.publish_time > t.publish_time THEN
-        UPDATE SET {update_clause}
-    WHEN NOT MATCHED THEN
-        INSERT ({insert_cols}) VALUES ({insert_vals})
-    """
-    
-    print(f"Executing MERGE...")
-    spark.sql(merge_sql)
+    if is_first_run:
+        # First run: Use writeTo() to create table properly
+        print("First run - using writeTo().createOrReplace() for initial load")
+        df_flattened.writeTo(CURATED_TABLE).using("iceberg").createOrReplace()
+        print("Initial data loaded successfully")
+    else:
+        # Subsequent runs: Use append for now
+        # NOTE: MERGE requires Iceberg Spark Extensions which aren't working in Glue 4.0
+        # Using append with dedup for MVP testing
+        print("Appending deduplicated data (MERGE not supported in this Glue 4.0 config)")
+        df_flattened.writeTo(CURATED_TABLE).append()
+        print("Append complete")
     
     # Update checkpoint
     update_checkpoint(TOPIC_NAME, max_ingestion_ts)

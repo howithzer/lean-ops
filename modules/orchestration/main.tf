@@ -98,11 +98,13 @@ resource "aws_glue_job" "unified" {
   }
 
   default_arguments = {
-    "--job-language"                     = "python"
-    "--job-bookmark-option"              = "job-bookmark-enable"
-    "--enable-metrics"                   = "true"
-    "--enable-continuous-cloudwatch-log" = "true"
-    "--TempDir"                          = "s3://${var.iceberg_bucket}/glue-temp/"
+    "--job-language"                                                     = "python"
+    "--job-bookmark-option"                                              = "job-bookmark-disable"
+    "--enable-metrics"                                                   = "true"
+    "--enable-continuous-cloudwatch-log"                                 = "true"
+    "--TempDir"                                                          = "s3://${var.iceberg_bucket}/glue-temp/"
+    "--datalake-formats"                                                 = "iceberg"
+    "--conf"                                                             = "spark.sql.catalog.glue_catalog=org.apache.iceberg.spark.SparkCatalog --conf spark.sql.catalog.glue_catalog.warehouse=s3://${var.iceberg_bucket}/ --conf spark.sql.catalog.glue_catalog.catalog-impl=org.apache.iceberg.aws.glue.GlueCatalog --conf spark.sql.catalog.glue_catalog.io-impl=org.apache.iceberg.aws.s3.S3FileIO"
   }
 
   glue_version      = "4.0"

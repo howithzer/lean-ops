@@ -111,6 +111,11 @@ variable "tags" {
   default     = {}
 }
 
+variable "iceberg_bucket" {
+  description = "S3 bucket for Iceberg data"
+  type        = string
+}
+
 # =============================================================================
 # LOCALS
 # =============================================================================
@@ -125,6 +130,97 @@ locals {
 
 data "aws_region" "current" {}
 data "aws_caller_identity" "current" {}
+
+# =============================================================================
+# GLUE IAM ROLE
+# =============================================================================
+
+resource "aws_iam_role" "glue" {
+  name = "${local.name_prefix}-glue-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "glue.amazonaws.com" }
+    }]
+  })
+
+  tags = local.common_tags
+}
+
+# Attach AWS managed Glue service policy (required for Glue job execution)
+resource "aws_iam_role_policy_attachment" "glue_service" {
+  role       = aws_iam_role.glue.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
+}
+
+resource "aws_iam_role_policy" "glue" {
+  name = "${local.name_prefix}-glue-policy"
+  role = aws_iam_role.glue.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          "arn:aws:s3:::${var.iceberg_bucket}",
+          "arn:aws:s3:::${var.iceberg_bucket}/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "glue:GetTable",
+          "glue:GetTables",
+          "glue:GetTableVersion",
+          "glue:GetTableVersions",
+          "glue:UpdateTable",
+          "glue:GetDatabase",
+          "glue:GetDatabases",
+          "glue:CreateTable",
+          "glue:BatchGetPartition"
+        ]
+        Resource = [
+          "arn:aws:glue:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:catalog",
+          "arn:aws:glue:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:database/*",
+          "arn:aws:glue:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:table/*/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem"
+        ]
+        Resource = var.checkpoint_table_arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:*:*:*"
+      }
+    ]
+  })
+}
+
+output "glue_role_arn" {
+  description = "Glue IAM role ARN"
+  value       = aws_iam_role.glue.arn
+}
 
 # =============================================================================
 # LAMBDA: SQS PROCESSOR
