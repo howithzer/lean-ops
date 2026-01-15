@@ -24,3 +24,7 @@ __pycache__/
 
 # OS
 .DS_Store
+.DS_Store
+.terraform.lock.hcl
+__pycache__/
+*.pyc
