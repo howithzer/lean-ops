@@ -1,0 +1,30 @@
+{
+    "name": "Test: MERGE Collision (Same Idempotency Key, Different Publish Times)",
+    "description": "300 records with 50% sharing the same idempotency_key to test MERGE collision handling",
+    "run_mode": "local",
+    "log_format": "user",
+    "log_level": "INFO",
+    "sink_type": "sqs",
+    "concurrency": 5,
+    "batch_size": 50,
+    "total_records": 300,
+    "metrics_interval_seconds": 10,
+    "schema_config": {
+        "base_schema": "../../Testing_Framework_EEH_2.0/sample-data-generator/schemas/iceberg_raw_events_v2.json",
+        "drift": {
+            "enabled": false,
+            "percentage": 0.0
+        },
+        "duplicates": {
+            "enabled": true,
+            "percentage": 0.5,
+            "max_duplicates": 10,
+            "duplicate_key": "idempotencyKey",
+            "vary_publish_time": true
+        }
+    },
+    "sqs_config": {
+        "target_sqs_url": "https://sqs.us-east-1.amazonaws.com/487500748616/lean-ops-dev-events-queue",
+        "region": "us-east-1"
+    }
+}

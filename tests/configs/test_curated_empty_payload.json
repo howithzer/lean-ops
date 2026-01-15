@@ -1,0 +1,35 @@
+{
+    "name": "Test: Empty Payload Records (Curated Error Handling)",
+    "description": "20% of records have empty or null payloads - tests curated layer error handling",
+    "run_mode": "local",
+    "log_format": "user",
+    "log_level": "INFO",
+    "sink_type": "sqs",
+    "concurrency": 5,
+    "batch_size": 50,
+    "total_records": 200,
+    "metrics_interval_seconds": 10,
+    "schema_config": {
+        "base_schema": "../../Testing_Framework_EEH_2.0/sample-data-generator/schemas/iceberg_raw_events_v2.json",
+        "drift": {
+            "enabled": false,
+            "percentage": 0.0
+        },
+        "duplicates": {
+            "enabled": false,
+            "percentage": 0.0
+        },
+        "malformed": {
+            "enabled": true,
+            "percentage": 0.2,
+            "types": [
+                "empty_payload",
+                "null_payload"
+            ]
+        }
+    },
+    "sqs_config": {
+        "target_sqs_url": "https://sqs.us-east-1.amazonaws.com/487500748616/lean-ops-dev-events-queue",
+        "region": "us-east-1"
+    }
+}
