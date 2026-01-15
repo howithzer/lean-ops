@@ -1,0 +1,35 @@
+{
+    "name": "Test: Type Change (Safe Casting)",
+    "description": "30% of records have integer instead of string for 'applicationId'. Tests safe STRING casting.",
+    "run_mode": "local",
+    "log_format": "user",
+    "log_level": "INFO",
+    "sink_type": "sqs",
+    "concurrency": 5,
+    "batch_size": 50,
+    "total_records": 300,
+    "metrics_interval_seconds": 10,
+    "schema_config": {
+        "base_schema": "../../Testing_Framework_EEH_2.0/sample-data-generator/schemas/iceberg_raw_events_v2.json",
+        "drift": {
+            "enabled": true,
+            "percentage": 0.3,
+            "add_columns": false,
+            "delete_columns": false,
+            "reorder_columns": false,
+            "type_changes": true,
+            "type_change_fields": {
+                "applicationId": "integer",
+                "userId": "integer"
+            }
+        },
+        "duplicates": {
+            "enabled": false,
+            "percentage": 0.0
+        }
+    },
+    "sqs_config": {
+        "target_sqs_url": "https://sqs.us-east-1.amazonaws.com/487500748616/lean-ops-dev-events-queue",
+        "region": "us-east-1"
+    }
+}

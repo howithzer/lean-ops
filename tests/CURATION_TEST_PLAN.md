@@ -148,6 +148,54 @@ LIMIT 10;
 
 ---
 
+## 5. Schema Evolution Tests (NEW)
+
+### SE-01: Column Addition
+**Config:** `test_column_addition.json`
+| Step | Action |
+|------|--------|
+| 1 | Send 300 records, 30% with new columns (extraField, newMetric, customTag) |
+| 2 | Run Glue job |
+| 3 | Verify: `DESCRIBE iceberg_curated_db.events` shows new columns |
+| 4 | Verify: New columns are STRING type |
+
+### SE-02: Missing Column (NULL Handling)
+**Config:** `test_missing_column.json`
+| Step | Action |
+|------|--------|
+| 1 | Send 300 records, 30% missing sessionId and verb fields |
+| 2 | Run Glue job |
+| 3 | Verify: Records inserted with NULL for missing columns |
+| 4 | Query: `SELECT COUNT(*) WHERE sessionid IS NULL` |
+
+### SE-03: Type Change (Safe Casting)
+**Config:** `test_type_change.json`
+| Step | Action |
+|------|--------|
+| 1 | Send 300 records, 30% with integer instead of string for applicationId |
+| 2 | Run Glue job |
+| 3 | Verify: No errors, integer safely cast to STRING |
+| 4 | Query: Sample records show string values |
+
+### Validation Queries
+
+```sql
+-- Check for new columns
+DESCRIBE iceberg_curated_db.events;
+
+-- Verify NULL handling
+SELECT COUNT(*) as null_count 
+FROM iceberg_curated_db.events 
+WHERE sessionid IS NULL;
+
+-- Verify type casting worked
+SELECT applicationid, typeof(applicationid) 
+FROM iceberg_curated_db.events 
+LIMIT 5;
+```
+
+---
+
 ## 5. Error Handling Tests
 
 ### Negative Cases (Failure Modes)

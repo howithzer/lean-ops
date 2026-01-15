@@ -132,29 +132,107 @@ def flatten_json_payload(df):
 
 def add_missing_columns_to_curated(df, curated_table):
     """
-    Check if any columns in df are missing from curated table.
-    If so, ALTER TABLE ADD COLUMNS.
+    SCHEMA EVOLUTION: Add new columns from DataFrame to Curated table.
+    All new columns are added as STRING for maximum flexibility.
+    
+    Returns: List of newly added columns
     """
     # Get current curated table columns
     try:
-        curated_cols = set(spark.table(curated_table).columns)
-    except:
-        curated_cols = set()
+        curated_cols = set(col.lower() for col in spark.table(curated_table).columns)
+    except Exception as e:
+        print(f"Could not get curated table columns: {e}")
+        return []
     
-    # Get new dataframe columns
-    df_cols = set(df.columns)
+    # Get new dataframe columns (lowercase for comparison)
+    df_cols = set(col.lower() for col in df.columns)
     
-    # Find missing columns
+    # Find new columns not in curated table
     new_cols = df_cols - curated_cols
+    added_cols = []
     
-    # Add missing columns
+    # Limit to prevent massive schema explosion
+    MAX_NEW_COLS_PER_RUN = 50
+    if len(new_cols) > MAX_NEW_COLS_PER_RUN:
+        print(f"WARNING: {len(new_cols)} new columns detected, limiting to {MAX_NEW_COLS_PER_RUN}")
+        new_cols = list(new_cols)[:MAX_NEW_COLS_PER_RUN]
+    
+    # Add missing columns as STRING
     for col in new_cols:
-        if col not in ['message_id', 'idempotency_key', 'ingestion_ts']:  # Skip core cols
-            print(f"Adding new column to Curated table: {col}")
-            try:
-                spark.sql(f"ALTER TABLE {curated_table} ADD COLUMNS ({col} STRING)")
-            except Exception as e:
-                print(f"Column {col} may already exist or error: {e}")
+        print(f"SCHEMA EVOLUTION: Adding new column '{col}' as STRING")
+        try:
+            spark.sql(f"ALTER TABLE {curated_table} ADD COLUMNS ({col} STRING)")
+            added_cols.append(col)
+        except Exception as e:
+            # Column may already exist (race condition) - that's OK
+            if "already exists" in str(e).lower():
+                print(f"Column '{col}' already exists, skipping")
+            else:
+                print(f"Error adding column '{col}': {e}")
+    
+    if added_cols:
+        print(f"SCHEMA EVOLUTION: Added {len(added_cols)} new columns: {added_cols}")
+    
+    return added_cols
+
+
+def align_dataframe_to_table(df, curated_table):
+    """
+    SCHEMA EVOLUTION: Align DataFrame columns to match Curated table schema.
+    - Columns in table but missing in DF: Add as NULL
+    - Columns in DF but not in table: Already handled by add_missing_columns_to_curated
+    
+    Returns: DataFrame with columns matching table schema
+    """
+    try:
+        table_cols = spark.table(curated_table).columns
+    except Exception as e:
+        print(f"Could not get table schema for alignment: {e}")
+        return df
+    
+    # Add missing columns as NULL
+    for col in table_cols:
+        if col not in df.columns:
+            # Case-insensitive check
+            matching_col = next((c for c in df.columns if c.lower() == col.lower()), None)
+            if matching_col:
+                # Rename to match case
+                df = df.withColumnRenamed(matching_col, col)
+            else:
+                # Column is missing in data - add as NULL
+                print(f"SCHEMA EVOLUTION: Column '{col}' missing in data, inserting NULL")
+                df = df.withColumn(col, F.lit(None).cast(StringType()))
+    
+    # Reorder columns to match table schema exactly
+    df_aligned = df.select(table_cols)
+    
+    return df_aligned
+
+
+def safe_cast_to_string(df):
+    """
+    SCHEMA EVOLUTION: Safely cast all non-envelope columns to STRING.
+    Handles: INT, LONG, DOUBLE, TIMESTAMP, BOOLEAN, etc.
+    
+    Returns: DataFrame with all payload columns as STRING
+    """
+    # Envelope columns that have specific types
+    preserve_types = {'ingestion_ts'}  # Keep as BIGINT
+    
+    for field in df.schema.fields:
+        col_name = field.name
+        col_type = str(field.dataType)
+        
+        # Skip columns that should preserve type
+        if col_name in preserve_types:
+            continue
+        
+        # Cast to STRING if not already
+        if col_type != 'StringType':
+            print(f"SAFE CAST: Converting '{col_name}' from {col_type} to STRING")
+            df = df.withColumn(col_name, F.col(col_name).cast(StringType()))
+    
+    return df
 
 
 def dedup_stage1_fifo(df):
@@ -204,6 +282,18 @@ def main():
     df_flattened = flatten_json_payload(df_deduped)
     print(f"Columns after flattening: {df_flattened.columns}")
     
+    # SCHEMA EVOLUTION Step 1: Safe cast all columns to STRING
+    df_flattened = safe_cast_to_string(df_flattened)
+    
+    # SCHEMA EVOLUTION Step 2: Add new columns to Curated table
+    new_cols = add_missing_columns_to_curated(df_flattened, CURATED_TABLE)
+    if new_cols:
+        print(f"Schema evolved: {len(new_cols)} new columns added")
+    
+    # SCHEMA EVOLUTION Step 3: Align DataFrame to table schema (handle missing columns)
+    df_aligned = align_dataframe_to_table(df_flattened, CURATED_TABLE)
+    print(f"Aligned columns: {df_aligned.columns}")
+    
     # Check if this is first run (Curated table is empty)
     is_first_run = True
     try:
@@ -215,16 +305,17 @@ def main():
         print(f"First run detected (no snapshots): {e}")
     
     if is_first_run:
-        # First run: Use writeTo() to create table properly
-        print("First run - using writeTo().createOrReplace() for initial load")
-        df_flattened.writeTo(CURATED_TABLE).using("iceberg").createOrReplace()
+        # First run: Use writeTo() - table should already exist from ensure_curated_table Lambda
+        # But if it doesn't, this creates it
+        print("First run - using writeTo() for initial load")
+        df_aligned.writeTo(CURATED_TABLE).using("iceberg").createOrReplace()
         print("Initial data loaded successfully")
     else:
         # Subsequent runs: Use MERGE for LIFO dedup on idempotency_key
         # Requires IcebergSparkSessionExtensions in --conf
-        df_flattened.createOrReplaceTempView("staged_data")
+        df_aligned.createOrReplaceTempView("staged_data")
         
-        columns = df_flattened.columns
+        columns = df_aligned.columns
         update_clause = ", ".join([f"t.{c} = s.{c}" for c in columns if c != 'idempotency_key'])
         insert_cols = ", ".join(columns)
         insert_vals = ", ".join([f"s.{c}" for c in columns])
@@ -239,7 +330,8 @@ def main():
             INSERT ({insert_cols}) VALUES ({insert_vals})
         """
         
-        print("Executing MERGE...")
+        print(f"Executing MERGE with {len(columns)} columns...")
+        print(f"MERGE SQL: {merge_sql[:200]}...")
         spark.sql(merge_sql)
         print("MERGE complete")
     
