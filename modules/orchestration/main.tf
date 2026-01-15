@@ -254,9 +254,6 @@ resource "aws_sfn_state_machine" "unified_orchestrator" {
         Type    = "Succeed"
         Comment = "Curated succeeded, Semantic not yet implemented"
       }
-      Success = {
-        Type = "Succeed"
-      }
       # Error handling
       HandleError = {
         Type     = "Task"

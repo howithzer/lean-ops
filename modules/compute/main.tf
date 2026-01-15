@@ -838,6 +838,11 @@ resource "aws_iam_role_policy" "check_schema_exists" {
     Statement = [
       {
         Effect = "Allow"
+        Action = ["s3:ListBucket"]
+        Resource = "arn:aws:s3:::${var.iceberg_bucket}"
+      },
+      {
+        Effect = "Allow"
         Action = ["s3:HeadObject", "s3:GetObject"]
         Resource = "arn:aws:s3:::${var.iceberg_bucket}/schemas/*"
       },

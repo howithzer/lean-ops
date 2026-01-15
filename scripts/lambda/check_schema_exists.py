@@ -47,8 +47,9 @@ def lambda_handler(event, context):
         }
     except s3.exceptions.ClientError as e:
         error_code = e.response.get('Error', {}).get('Code', '')
-        if error_code == '404':
-            logger.info(f"Schema NOT found: s3://{bucket}/{key}")
+        # Treat 404 (Not Found) and 403 (Forbidden - returned when no ListBucket permission) as "not found"
+        if error_code in ['404', '403']:
+            logger.info(f"Schema NOT found (code={error_code}): s3://{bucket}/{key}")
             return {
                 "exists": False,
                 "bucket": bucket,

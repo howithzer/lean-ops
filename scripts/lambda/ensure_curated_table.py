@@ -58,7 +58,8 @@ def lambda_handler(event, context):
         logger.info(f"Table already exists: {full_table}")
         return {
             "status": "exists",
-            "table": full_table
+            "table": full_table,
+            "columns_count": 0  # Existing table - column count not computed
         }
     
     # 2. Load schema from S3
