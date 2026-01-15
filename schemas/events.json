@@ -1,0 +1,99 @@
+{
+    "schema_version": "1.0.0",
+    "table_name": "events",
+    "description": "Curated events table - ALL STRING columns for maximum flexibility",
+    "envelope_columns": {
+        "message_id": {
+            "type": "STRING",
+            "required": true,
+            "description": "GCP Pub/Sub message ID for network dedup"
+        },
+        "idempotency_key": {
+            "type": "STRING",
+            "required": true,
+            "description": "Application idempotency key for correction dedup"
+        },
+        "topic_name": {
+            "type": "STRING",
+            "required": true,
+            "description": "Source topic name"
+        },
+        "period_reference": {
+            "type": "STRING",
+            "required": false,
+            "partition": true,
+            "description": "Business period for partitioning (YYYY-MM)"
+        },
+        "correlation_id": {
+            "type": "STRING",
+            "required": false,
+            "description": "Trace correlation ID"
+        },
+        "publish_time": {
+            "type": "STRING",
+            "required": true,
+            "partition": "day",
+            "description": "GCP Pub/Sub publish time (ISO 8601)"
+        },
+        "ingestion_ts": {
+            "type": "BIGINT",
+            "required": true,
+            "description": "RAW layer ingestion timestamp (epoch seconds)"
+        }
+    },
+    "payload_columns": {
+        "session_id": {
+            "json_path": "$.sessionId",
+            "description": "User session identifier"
+        },
+        "user_id": {
+            "json_path": "$.event.userId",
+            "description": "User identifier"
+        },
+        "event_type": {
+            "json_path": "$.event.eventType",
+            "description": "Type of event (Login, Logout, etc.)"
+        },
+        "verb": {
+            "json_path": "$.event.verb",
+            "description": "HTTP verb (GET, POST, etc.)"
+        },
+        "application_id": {
+            "json_path": "$.event.applicationId",
+            "description": "Application identifier"
+        },
+        "event_timestamp": {
+            "json_path": "$.event.timestamp",
+            "description": "Event time (ISO 8601)"
+        },
+        "ip_address": {
+            "json_path": "$.event.metadata.ipAddress",
+            "description": "Client IP address"
+        },
+        "user_agent": {
+            "json_path": "$.event.metadata.userAgent",
+            "description": "Browser/client user agent"
+        },
+        "device_id": {
+            "json_path": "$.event.metadata.deviceId",
+            "description": "Device identifier"
+        }
+    },
+    "table_properties": {
+        "format": "parquet",
+        "write_compression": "zstd",
+        "write.target-file-size-bytes": "268435456",
+        "commit.manifest.target-size-bytes": "8388608",
+        "commit.manifest.min-count-to-merge": "50"
+    },
+    "partitioning": [
+        {
+            "field": "period_reference",
+            "transform": "identity"
+        },
+        {
+            "field": "publish_time",
+            "transform": "day"
+        }
+    ]
+}

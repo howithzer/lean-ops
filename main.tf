@@ -212,14 +212,16 @@ module "ingestion" {
 module "orchestration" {
   source = "./modules/orchestration"
 
-  environment             = var.environment
-  topics                  = var.topics
-  schedule_expression     = var.semantic_schedule
-  iceberg_bucket          = var.iceberg_bucket
-  glue_role_arn           = module.compute.glue_role_arn
-  check_schema_lambda_arn = module.compute.check_schema_arn
-  alerts_topic_arn        = module.observability.alerts_topic_arn
-  tags                    = local.common_tags
+  environment                     = var.environment
+  topics                          = var.topics
+  schedule_expression             = var.semantic_schedule
+  iceberg_bucket                  = var.iceberg_bucket
+  schema_bucket                   = var.iceberg_bucket
+  glue_role_arn                   = module.compute.glue_role_arn
+  check_schema_lambda_arn         = module.compute.check_schema_exists_arn
+  ensure_curated_table_lambda_arn = module.compute.ensure_curated_table_arn
+  alerts_topic_arn                = module.observability.alerts_topic_arn
+  tags                            = local.common_tags
 
   depends_on = [module.compute, module.observability, module.ingestion]
 }

@@ -803,3 +803,170 @@ output "update_checkpoint_name" {
   value       = aws_lambda_function.update_checkpoint.function_name
 }
 
+# =============================================================================
+# LAMBDA: CHECK SCHEMA EXISTS
+# =============================================================================
+# Checks if a schema file exists in S3 for a given topic (Schema Gate pattern)
+
+data "archive_file" "check_schema_exists" {
+  type        = "zip"
+  source_dir  = "${path.module}/.build/check_schema_exists"
+  output_path = "${path.module}/.build/check_schema_exists.zip"
+}
+
+resource "aws_iam_role" "check_schema_exists" {
+  name = "${local.name_prefix}-check-schema-exists-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy" "check_schema_exists" {
+  name = "${local.name_prefix}-check-schema-exists-policy"
+  role = aws_iam_role.check_schema_exists.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = ["s3:HeadObject", "s3:GetObject"]
+        Resource = "arn:aws:s3:::${var.iceberg_bucket}/schemas/*"
+      },
+      {
+        Effect = "Allow"
+        Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "arn:aws:logs:*:*:*"
+      }
+    ]
+  })
+}
+
+resource "aws_lambda_function" "check_schema_exists" {
+  filename         = data.archive_file.check_schema_exists.output_path
+  function_name    = "${local.name_prefix}-check-schema-exists"
+  role             = aws_iam_role.check_schema_exists.arn
+  handler          = "handler.lambda_handler"
+  source_code_hash = data.archive_file.check_schema_exists.output_base64sha256
+  runtime          = "python3.11"
+  timeout          = 30
+  memory_size      = 128
+
+  tags = local.common_tags
+}
+
+output "check_schema_exists_arn" {
+  description = "Check schema exists Lambda ARN"
+  value       = aws_lambda_function.check_schema_exists.arn
+}
+
+# =============================================================================
+# LAMBDA: ENSURE CURATED TABLE
+# =============================================================================
+# Ensures Curated table exists with proper DDL from schema file
+
+data "archive_file" "ensure_curated_table" {
+  type        = "zip"
+  source_dir  = "${path.module}/.build/ensure_curated_table"
+  output_path = "${path.module}/.build/ensure_curated_table.zip"
+}
+
+resource "aws_iam_role" "ensure_curated_table" {
+  name = "${local.name_prefix}-ensure-curated-table-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy" "ensure_curated_table" {
+  name = "${local.name_prefix}-ensure-curated-table-policy"
+  role = aws_iam_role.ensure_curated_table.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:HeadObject"]
+        Resource = "arn:aws:s3:::${var.iceberg_bucket}/schemas/*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution",
+          "athena:GetQueryResults"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = ["s3:GetBucketLocation", "s3:GetObject", "s3:ListBucket", "s3:PutObject"]
+        Resource = [
+          "arn:aws:s3:::${var.iceberg_bucket}",
+          "arn:aws:s3:::${var.iceberg_bucket}/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "glue:GetTable",
+          "glue:GetDatabase",
+          "glue:CreateTable",
+          "glue:UpdateTable"
+        ]
+        Resource = [
+          "arn:aws:glue:*:*:catalog",
+          "arn:aws:glue:*:*:database/*",
+          "arn:aws:glue:*:*:table/*/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "arn:aws:logs:*:*:*"
+      }
+    ]
+  })
+}
+
+resource "aws_lambda_function" "ensure_curated_table" {
+  filename         = data.archive_file.ensure_curated_table.output_path
+  function_name    = "${local.name_prefix}-ensure-curated-table"
+  role             = aws_iam_role.ensure_curated_table.arn
+  handler          = "handler.lambda_handler"
+  source_code_hash = data.archive_file.ensure_curated_table.output_base64sha256
+  runtime          = "python3.11"
+  timeout          = 120
+  memory_size      = 256
+
+  environment {
+    variables = {
+      ATHENA_OUTPUT_BUCKET = var.iceberg_bucket
+      ATHENA_WORKGROUP     = "primary"
+    }
+  }
+
+  tags = local.common_tags
+}
+
+output "ensure_curated_table_arn" {
+  description = "Ensure curated table Lambda ARN"
+  value       = aws_lambda_function.ensure_curated_table.arn
+}

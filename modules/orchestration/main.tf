@@ -57,6 +57,16 @@ variable "check_schema_lambda_arn" {
   type        = string
 }
 
+variable "ensure_curated_table_lambda_arn" {
+  description = "Ensure curated table Lambda ARN"
+  type        = string
+}
+
+variable "schema_bucket" {
+  description = "S3 bucket for schema files"
+  type        = string
+}
+
 variable "alerts_topic_arn" {
   description = "SNS topic ARN for alerts"
   type        = string
@@ -142,27 +152,85 @@ resource "aws_sfn_state_machine" "unified_orchestrator" {
   role_arn = aws_iam_role.step_functions.arn
 
   definition = jsonencode({
-    Comment = "Unified Orchestrator - Curated + Semantic processing"
+    Comment = "Unified Orchestrator with Schema Gate - Curated + Semantic processing"
     StartAt = "CheckSchemaExists"
     States = {
+      # Step 1: Check if schema file exists in S3
       CheckSchemaExists = {
         Type     = "Task"
         Resource = "arn:aws:states:::lambda:invoke"
         Parameters = {
           FunctionName = var.check_schema_lambda_arn
-          "Payload.$"  = "$"
+          Payload = {
+            "bucket"       = var.schema_bucket
+            "key.$"        = "States.Format('schemas/{}.json', $.topic_name)"
+          }
+        }
+        ResultSelector = {
+          "exists.$" = "$.Payload.exists"
         }
         ResultPath = "$.schemaCheck"
-        Next       = "RunCurated"
+        Next       = "SchemaGate"
       }
+      # Step 2: Schema Gate - skip if no schema
+      SchemaGate = {
+        Type    = "Choice"
+        Choices = [{
+          Variable      = "$.schemaCheck.exists"
+          BooleanEquals = true
+          Next          = "EnsureCuratedTable"
+        }]
+        Default = "SkipNoSchema"
+      }
+      # Step 2a: Skip if no schema found
+      SkipNoSchema = {
+        Type   = "Pass"
+        Result = {
+          status = "skipped"
+          reason = "Schema file not found - topic not ready for curation"
+        }
+        ResultPath = "$.skipReason"
+        End        = true
+      }
+      # Step 3: Ensure Curated table exists with proper DDL
+      EnsureCuratedTable = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = var.ensure_curated_table_lambda_arn
+          Payload = {
+            "database"      = "iceberg_curated_db"
+            "table.$"       = "$.topic_name"
+            "schema_bucket" = var.schema_bucket
+            "schema_key.$"  = "States.Format('schemas/{}.json', $.topic_name)"
+            "iceberg_bucket" = var.iceberg_bucket
+          }
+        }
+        ResultSelector = {
+          "status.$"        = "$.Payload.status"
+          "table.$"         = "$.Payload.table"
+          "columns_count.$" = "$.Payload.columns_count"
+        }
+        ResultPath = "$.tableCheck"
+        Next       = "RunCurated"
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          ResultPath  = "$.error"
+          Next        = "HandleError"
+        }]
+      }
+      # Step 4: Run Curation Glue Job
       RunCurated = {
         Type     = "Task"
         Resource = "arn:aws:states:::glue:startJobRun.sync"
         Parameters = {
           JobName   = aws_glue_job.unified.name
           Arguments = {
-            "--topic_name.$" = "$.topic_name"
-            "--layer"        = "curated"
+            "--topic_name.$"      = "$.topic_name"
+            "--raw_database"      = "iceberg_raw_db"
+            "--curated_database"  = "iceberg_curated_db"
+            "--checkpoint_table"  = "${local.name_prefix}-checkpoints"
+            "--iceberg_bucket"    = var.iceberg_bucket
           }
         }
         ResultPath = "$.glueResult"
@@ -173,44 +241,23 @@ resource "aws_sfn_state_machine" "unified_orchestrator" {
           Next        = "HandleError"
         }]
       }
+      # Step 5: Check if Semantic processing is ready
       CheckSemanticReady = {
-        Type    = "Choice"
-        Choices = [{
-          Variable      = "$.schemaCheck.Payload.schema_ready"
-          BooleanEquals = true
-          Next          = "RunSemantic"
-        }]
-        Default = "SucceedCurationOnly"
+        Type   = "Pass"
+        Result = { semantic_ready = false }
+        ResultPath = "$.semanticCheck"
+        Comment = "Placeholder - Semantic layer not yet implemented"
+        Next    = "SuccessCurationOnly"
       }
-      RunSemantic = {
-        Type     = "Task"
-        Resource = "arn:aws:states:::glue:startJobRun.sync"
-        Parameters = {
-          JobName   = aws_glue_job.unified.name
-          Arguments = {
-            "--topic_name.$" = "$.topic_name"
-            "--layer"        = "semantic"
-          }
-        }
-        ResultPath = "$.glueResult"
-        Next       = "Success"
-        Catch = [{
-          ErrorEquals = ["States.ALL"]
-          ResultPath  = "$.error"
-          Next        = "SucceedWithWarning"
-        }]
-      }
-      SucceedCurationOnly = {
+      # Success states
+      SuccessCurationOnly = {
         Type    = "Succeed"
-        Comment = "Curated succeeded, Semantic skipped (no schema)"
-      }
-      SucceedWithWarning = {
-        Type    = "Succeed"
-        Comment = "Curated succeeded, Semantic failed"
+        Comment = "Curated succeeded, Semantic not yet implemented"
       }
       Success = {
         Type = "Succeed"
       }
+      # Error handling
       HandleError = {
         Type     = "Task"
         Resource = "arn:aws:states:::sns:publish"
@@ -242,7 +289,10 @@ resource "aws_iam_role_policy" "step_functions" {
       {
         Effect = "Allow"
         Action = ["lambda:InvokeFunction"]
-        Resource = var.check_schema_lambda_arn
+        Resource = [
+          var.check_schema_lambda_arn,
+          var.ensure_curated_table_lambda_arn
+        ]
       },
       {
         Effect = "Allow"
