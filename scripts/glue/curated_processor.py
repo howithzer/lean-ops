@@ -98,34 +98,111 @@ def update_checkpoint(topic_name, checkpoint_value):
     print(f"Checkpoint updated: curation_{topic_name}/curated -> {checkpoint_value}")
 
 
-def flatten_json_payload(df):
+def flatten_json_payload(df, max_depth=5):
     """
-    Flatten json_payload column into individual STRING columns.
-    Extracts all keys from JSON and creates a column for each.
+    DEEP FLATTEN: Flatten json_payload column into individual STRING columns.
+    Recursively extracts nested keys up to max_depth levels.
+    
+    Nested keys become underscore-separated column names:
+    - event.userId -> event_userid
+    - event.metadata.ipAddress -> event_metadata_ipaddress
+    
+    Args:
+        df: DataFrame with json_payload column
+        max_depth: Maximum nesting depth to flatten (default 5)
+    
+    Returns:
+        DataFrame with flattened columns
     """
-    # Parse JSON payload into map
-    df_with_map = df.withColumn(
-        "payload_map",
-        F.from_json(F.col("json_payload"), MapType(StringType(), StringType()))
-    )
+    import json
     
-    # Get all unique keys from the payload across all records
-    all_keys = df_with_map.select(
-        F.explode(F.map_keys(F.col("payload_map")))
-    ).distinct().collect()
+    def recursive_flatten(obj, prefix='', depth=0):
+        """Recursively flatten a dict, returning list of (key, value) tuples."""
+        items = []
+        if depth >= max_depth:
+            # Max depth reached - store as JSON string
+            items.append((prefix, json.dumps(obj) if isinstance(obj, (dict, list)) else obj))
+            return items
+        
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                new_key = f"{prefix}_{k}" if prefix else k
+                new_key = new_key.replace("-", "_").replace(".", "_").lower()
+                if isinstance(v, dict):
+                    items.extend(recursive_flatten(v, new_key, depth + 1))
+                elif isinstance(v, list):
+                    # Store lists as JSON strings
+                    items.append((new_key, json.dumps(v)))
+                else:
+                    items.append((new_key, str(v) if v is not None else None))
+        else:
+            items.append((prefix, str(obj) if obj is not None else None))
+        
+        return items
     
-    key_list = [row[0] for row in all_keys if row[0]]
+    # Collect all unique flattened keys from a sample
+    print("DEEP FLATTEN: Extracting nested keys from payload...")
     
-    # Add each key as a column
-    for key in key_list:
+    # Sample first 1000 rows to discover all keys
+    sample_rows = df.select("json_payload").limit(1000).collect()
+    all_keys = set()
+    
+    for row in sample_rows:
+        if row.json_payload:
+            try:
+                payload_dict = json.loads(row.json_payload)
+                flattened = recursive_flatten(payload_dict, '', 0)
+                for key, _ in flattened:
+                    if key:
+                        all_keys.add(key)
+            except json.JSONDecodeError:
+                continue
+    
+    print(f"DEEP FLATTEN: Discovered {len(all_keys)} unique keys: {sorted(all_keys)[:20]}...")
+    
+    # Get existing columns to avoid duplicates
+    existing_cols = set(c.lower() for c in df.columns)
+    
+    # Also exclude envelope column variants (camelCase, etc.) to prevent conflicts
+    envelope_variants = {
+        'idempotencykey', 'idempotency_key', 'messageid', 'message_id',
+        'publishtime', 'publish_time', 'topicname', 'topic_name',
+        'correlationid', 'correlation_id', 'periodreference', 'period_reference',
+        'ingestionts', 'ingestion_ts'
+    }
+    exclude_cols = existing_cols.union(envelope_variants)
+    print(f"DEEP FLATTEN: Excluding envelope columns: {sorted(envelope_variants & all_keys)}")
+    
+    # Create a UDF to extract each key
+    def make_extractor(target_key, max_d):
+        def extract_key(json_str):
+            if not json_str:
+                return None
+            try:
+                payload = json.loads(json_str)
+                flattened = dict(recursive_flatten(payload, '', 0))
+                return flattened.get(target_key)
+            except:
+                return None
+        return F.udf(extract_key, StringType())
+    
+    # Add each discovered key as a column
+    added_count = 0
+    for key in sorted(all_keys):
         safe_key = key.replace("-", "_").replace(".", "_").lower()
-        df_with_map = df_with_map.withColumn(
-            safe_key,
-            F.col("payload_map").getItem(key).cast(StringType())
-        )
+        # Skip if column already exists OR is an envelope variant (case-insensitive)
+        if safe_key in exclude_cols:
+            print(f"DEEP FLATTEN: Skipping '{safe_key}' (excluded)")
+            continue
+        extractor = make_extractor(key, max_depth)
+        df = df.withColumn(safe_key, extractor(F.col("json_payload")))
+        print(f"DEEP FLATTEN: Added column '{safe_key}'")
+        added_count += 1
     
-    # Drop the temporary map column and original json_payload
-    df_flattened = df_with_map.drop("payload_map", "json_payload")
+    print(f"DEEP FLATTEN: Added {added_count} new columns")
+    
+    # Drop original json_payload
+    df_flattened = df.drop("json_payload")
     
     return df_flattened
 
@@ -147,9 +224,20 @@ def add_missing_columns_to_curated(df, curated_table):
     # Get new dataframe columns (lowercase for comparison)
     df_cols = set(col.lower() for col in df.columns)
     
-    # Find new columns not in curated table
-    new_cols = df_cols - curated_cols
+    # Exclude envelope column variants that would conflict with existing columns
+    envelope_variants = {
+        'idempotencykey', 'idempotency_key', 'messageid', 'message_id',
+        'publishtime', 'publish_time', 'topicname', 'topic_name',
+        'correlationid', 'correlation_id', 'periodreference', 'period_reference',
+        'ingestionts', 'ingestion_ts', 'json_payload'
+    }
+    
+    # Find new columns not in curated table AND not envelope variants
+    new_cols = df_cols - curated_cols - envelope_variants
     added_cols = []
+    
+    if new_cols:
+        print(f"SCHEMA EVOLUTION: Will add {len(new_cols)} new columns: {sorted(new_cols)}")
     
     # Limit to prevent massive schema explosion
     MAX_NEW_COLS_PER_RUN = 50

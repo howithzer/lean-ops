@@ -1,0 +1,36 @@
+{
+    "name": "Test: Flat Schema Evolution (Top-Level Keys)",
+    "description": "Uses flat schema with top-level keys only. 30% of records have new columns (newTopLevelField, extraMetric, customTag).",
+    "run_mode": "local",
+    "log_format": "user",
+    "log_level": "INFO",
+    "sink_type": "sqs",
+    "concurrency": 5,
+    "batch_size": 50,
+    "total_records": 300,
+    "metrics_interval_seconds": 10,
+    "schema_config": {
+        "base_schema": "../../Testing_Framework_EEH_2.0/sample-data-generator/schemas/iceberg_raw_flat_schema.json",
+        "drift": {
+            "enabled": true,
+            "percentage": 0.3,
+            "add_columns": true,
+            "new_column_names": [
+                "newTopLevelField",
+                "extraMetric",
+                "customTag"
+            ],
+            "delete_columns": false,
+            "reorder_columns": false,
+            "type_changes": false
+        },
+        "duplicates": {
+            "enabled": false,
+            "percentage": 0.0
+        }
+    },
+    "sqs_config": {
+        "target_sqs_url": "https://sqs.us-east-1.amazonaws.com/487500748616/lean-ops-dev-events-queue",
+        "region": "us-east-1"
+    }
+}
