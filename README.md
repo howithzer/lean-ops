@@ -115,13 +115,20 @@ All Lambdas share utilities via `lambda/common/`:
 # 1. Build Lambda packages (includes common library)
 ./scripts/build_lambdas.sh
 
-# 2. Initialize Terraform
+# 2. Build Glue package (creates glue_libs.zip with utils/)
+./scripts/build_glue.sh
+
+# 3. Initialize Terraform
 terraform init
 
-# 3. Deploy
+# 4. Deploy infrastructure
 AWS_PROFILE=terraform-firehose terraform apply -var-file="environments/dev.tfvars"
 
-# 4. Destroy (when done)
+# 5. Upload Glue artifacts and schema to S3
+./scripts/build_glue.sh --upload
+AWS_PROFILE=terraform-firehose aws s3 cp schemas/events.json s3://lean-ops-development-iceberg/schemas/events.json
+
+# 6. Destroy (when done)
 AWS_PROFILE=terraform-firehose terraform destroy -var-file="environments/dev.tfvars"
 ```
 
