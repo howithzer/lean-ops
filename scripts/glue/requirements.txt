@@ -1,0 +1,16 @@
+# Glue Job Dependencies
+# =====================
+# These are the Python dependencies required for the Curated Processor Glue job.
+# Note: PySpark and AWS Glue libraries are provided by the Glue environment.
+
+# AWS SDK
+boto3>=1.26.0
+
+# Data processing (provided by Glue, listed for local development)
+# pyspark>=3.3.0
+
+# Type hints backport (Python 3.7 compatibility)
+typing-extensions>=4.0.0
+
+# JSON schema validation (optional, for future use)
+# jsonschema>=4.0.0

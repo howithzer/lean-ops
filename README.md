@@ -44,7 +44,26 @@ EKS Pods (700+ topics)
     Snowflake (External Managed Iceberg Table)
 ```
 
-## Key Features
+### Data Flow (Simplified)
+
+```mermaid
+flowchart LR
+    SQS --> Lambda --> Firehose --> RAW[RAW Iceberg]
+    RAW --> StepFn --> Glue --> Curated[Curated Iceberg]
+```
+
+### Glue Job Structure
+
+```
+scripts/glue/
+├── curated_processor.py    # Main entry point
+├── requirements.txt        # Dependencies
+└── utils/
+    ├── config.py           # Logging, constants
+    ├── flatten.py          # Deep JSON flattening
+    └── schema_evolution.py # Column addition, alignment
+```
+
 
 ### Multi-Topic Routing
 - Single shared Firehose stream handles 700+ topics
