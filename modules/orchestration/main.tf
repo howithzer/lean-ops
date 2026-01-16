@@ -103,7 +103,7 @@ resource "aws_glue_job" "unified" {
 
   command {
     name            = "glueetl"
-    script_location = "s3://${var.iceberg_bucket}/glue-scripts/unified_processor.py"
+    script_location = "s3://${var.iceberg_bucket}/glue-scripts/curated_processor.py"
     python_version  = "3"
   }
 
@@ -116,6 +116,8 @@ resource "aws_glue_job" "unified" {
     "--spark-event-logs-path"            = "s3://${var.iceberg_bucket}/glue-temp/spark-logs/"
     "--TempDir"                          = "s3://${var.iceberg_bucket}/glue-temp/"
     "--datalake-formats"                 = "iceberg"
+    # Extra Python files: utils/ package for modular code
+    "--extra-py-files"                   = "s3://${var.iceberg_bucket}/glue-scripts/glue_libs.zip"
     # Key: IcebergSparkSessionExtensions enables MERGE/UPDATE/DELETE
     "--conf"                             = "spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions --conf spark.sql.iceberg.handle-timestamp-without-timezone=true"
   }
