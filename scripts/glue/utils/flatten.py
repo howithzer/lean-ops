@@ -8,11 +8,18 @@ without Spark. Spark-dependent functions require pyspark at runtime.
 """
 
 import json
-from typing import List, Tuple, Set, Optional, Any, TYPE_CHECKING
+from typing import List, Tuple, Set, Optional, Any
 
-# Conditional Spark imports - allows testing pure Python functions without Spark
-if TYPE_CHECKING:
+# Try to import PySpark - will succeed in Glue, may fail in local testing
+try:
     from pyspark.sql import DataFrame
+    from pyspark.sql import functions as F
+    from pyspark.sql.types import StringType
+    SPARK_AVAILABLE = True
+except ImportError:
+    # PySpark not installed - pure Python functions still work
+    DataFrame = None  # type: ignore
+    SPARK_AVAILABLE = False
 
 from .config import (
     get_logger,
@@ -142,9 +149,6 @@ def create_key_extractor(target_key: str, max_depth: int = MAX_FLATTEN_DEPTH):
     Raises:
         ImportError: If pyspark is not installed
     """
-    # Runtime import - allows pure Python functions to be tested without Spark
-    from pyspark.sql import functions as F
-    from pyspark.sql.types import StringType
     
     def extract_key(json_str: Optional[str]) -> Optional[str]:
         if not json_str:
@@ -183,9 +187,6 @@ def flatten_json_payload(
         Output: {"user_id": "123"}
     """
     logger.info("Starting deep flatten (max_depth=%d)...", max_depth)
-    
-    # Runtime import - allows pure Python functions to be tested without Spark
-    from pyspark.sql import functions as F
     
     # Discover all keys from sample
     all_keys = discover_payload_keys(df, FLATTEN_SAMPLE_SIZE, max_depth)
