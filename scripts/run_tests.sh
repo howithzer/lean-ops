@@ -101,6 +101,62 @@ run_athena_query() {
         --query "ResultSet.Rows[1:].Data[0].VarCharValue" --output text 2>/dev/null || echo "0"
 }
 
+# Verify DDL columns exist after schema drift
+verify_ddl_columns() {
+    local expected_columns=("$@")
+    
+    log_info "Verifying DDL for expected columns..."
+    
+    # Get all columns from the curated table
+    local query="SHOW COLUMNS IN iceberg_curated_db.events"
+    local query_id
+    
+    query_id=$(aws athena start-query-execution \
+        --query-string "$query" \
+        --work-group "$WORKGROUP" \
+        --result-configuration "OutputLocation=s3://$BUCKET/athena-results/" \
+        --query "QueryExecutionId" --output text 2>/dev/null)
+    
+    if [ -z "$query_id" ]; then
+        log_error "Failed to start Athena query"
+        return 1
+    fi
+    
+    # Wait for query completion
+    sleep 8
+    
+    # Get all columns as a single string
+    local columns
+    columns=$(aws athena get-query-results --query-execution-id "$query_id" \
+        --query "ResultSet.Rows[*].Data[0].VarCharValue" --output text 2>/dev/null | tr '\n' ' ')
+    
+    if [ -z "$columns" ]; then
+        log_error "No columns returned from Athena query"
+        return 1
+    fi
+    
+    log_info "Table columns: ${columns:0:200}..."  # Truncate for readability
+    
+    local all_found=true
+    for col in "${expected_columns[@]}"; do
+        # Case-insensitive search (Iceberg lowercases column names)
+        if echo "$columns" | grep -iq "$col"; then
+            log_info "  ✅ Column found: $col"
+        else
+            log_error "  ❌ Column missing: $col"
+            all_found=false
+        fi
+    done
+    
+    if [ "$all_found" = true ]; then
+        log_info "DDL verification PASSED - all expected columns exist"
+        return 0
+    else
+        log_error "DDL verification FAILED - missing columns"
+        return 1
+    fi
+}
+
 get_state_machine_arn() {
     # Try terraform output first (more reliable, no extra IAM needed)
     cd "$PROJECT_ROOT"
@@ -305,6 +361,22 @@ run_e2e_tests() {
     
     log_info "RAW table: $raw_count records"
     log_info "Curated table: $curated_count records"
+    
+    # DDL Verification - check schema drift columns were added
+    log_step "DDL Verification"
+    
+    # Expected columns from schema drift tests:
+    # - test_column_addition.json adds: extraField, newMetric, customTag
+    # - test_flat_schema_evolution.json adds deep nested columns
+    # - schema_drift_sqs.json adds various drift columns
+    local expected_drift_columns=("extrafield" "newmetric" "customtag")
+    
+    if verify_ddl_columns "${expected_drift_columns[@]}"; then
+        log_info "✅ DDL Verification PASSED"
+    else
+        log_warn "⚠️ DDL Verification FAILED - some expected columns missing"
+        # Don't fail the overall test for DDL issues (may be first run)
+    fi
     
     # Return failure if any test failed
     [ $failed -eq 0 ]
