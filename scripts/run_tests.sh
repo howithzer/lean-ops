@@ -102,9 +102,15 @@ run_athena_query() {
 }
 
 get_state_machine_arn() {
-    STATE_MACHINE_ARN=$(aws stepfunctions list-state-machines \
-        --query "stateMachines[?contains(name, 'lean-ops')].stateMachineArn" \
-        --output text 2>/dev/null | head -1)
+    # Try terraform output first (more reliable, no extra IAM needed)
+    cd "$PROJECT_ROOT"
+    STATE_MACHINE_ARN=$(terraform output -raw state_machine_arn 2>/dev/null || echo "")
+    
+    # Fallback to hardcoded ARN if terraform output fails
+    if [ -z "$STATE_MACHINE_ARN" ]; then
+        STATE_MACHINE_ARN="arn:aws:states:us-east-1:487500748616:stateMachine:lean-ops-dev-unified-orchestrator"
+        log_warn "Using hardcoded state machine ARN (terraform output unavailable)"
+    fi
     
     if [ -z "$STATE_MACHINE_ARN" ]; then
         log_error "State machine not found. Is infrastructure deployed?"
