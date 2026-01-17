@@ -1,16 +1,31 @@
 {
-    "schema_file": "../../Testing_Framework_EEH_2.0/sample-data-generator/schemas/iceberg_raw.json",
-    "total_records": 100,
-    "batch_size": 50,
+    "name": "Happy Path: Basic E2E Test",
+    "description": "100 records with no schema drift. Tests basic RAW -> Curated flow.",
+    "run_mode": "local",
+    "log_format": "user",
+    "log_level": "INFO",
+    "sink_type": "sqs",
     "concurrency": 5,
-    "sink": {
-        "type": "sqs",
-        "queue_url": "https://sqs.us-east-1.amazonaws.com/487500748616/lean-ops-events-queue"
+    "batch_size": 50,
+    "total_records": 100,
+    "metrics_interval_seconds": 10,
+    "schema_config": {
+        "base_schema": "../../Testing_Framework_EEH_2.0/sample-data-generator/schemas/iceberg_raw_events_v2.json",
+        "drift": {
+            "enabled": false,
+            "percentage": 0.0,
+            "add_columns": false,
+            "delete_columns": false,
+            "reorder_columns": false,
+            "type_changes": false
+        },
+        "duplicates": {
+            "enabled": false,
+            "percentage": 0.0
+        }
     },
-    "drift": {
-        "enabled": false
-    },
-    "duplicate": {
-        "enabled": false
+    "sqs_config": {
+        "target_sqs_url": "https://sqs.us-east-1.amazonaws.com/487500748616/lean-ops-dev-events-queue",
+        "region": "us-east-1"
     }
 }
