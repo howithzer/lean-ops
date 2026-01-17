@@ -257,10 +257,22 @@ run_e2e_tests() {
     local tests=()
     
     # Test definitions: name|config|records|wait
+    # Core tests (always run)
     tests+=("Happy Path|$CONFIGS_DIR/happy_path.json|100|90")
     tests+=("Column Addition|$CONFIGS_DIR/test_column_addition.json|300|90")
     tests+=("Missing Column|$CONFIGS_DIR/test_missing_column.json|300|90")
     tests+=("Type Change|$CONFIGS_DIR/test_type_change.json|300|90")
+    
+    # Deduplication & MERGE tests (critical for data quality)
+    tests+=("Network Duplicates|$CONFIGS_DIR/network_duplicates_sqs.json|300|90")
+    tests+=("Merge Collision|$CONFIGS_DIR/test_merge_collision.json|300|90")
+    
+    # Schema evolution tests
+    tests+=("Deep Flatten|$CONFIGS_DIR/test_flat_schema_evolution.json|300|90")
+    tests+=("Schema Drift|$CONFIGS_DIR/schema_drift_sqs.json|300|90")
+    
+    # Edge cases
+    tests+=("Empty Payload|$CONFIGS_DIR/test_curated_empty_payload.json|100|90")
     
     for test_def in "${tests[@]}"; do
         IFS='|' read -r name config records wait <<< "$test_def"
@@ -314,6 +326,23 @@ run_quick_test() {
     run_single_test "Quick Smoke Test" "$config" 50 60
 }
 
+run_stress_test() {
+    log_step "Thundering Herd Stress Test"
+    
+    get_state_machine_arn || { log_error "Deploy infrastructure first"; exit 1; }
+    
+    local config="$CONFIGS_DIR/thundering_herd.json"
+    if [ ! -f "$config" ]; then
+        log_error "thundering_herd.json not found"
+        exit 1
+    fi
+    
+    log_warn "This test sends 5000 records - may take 5+ minutes"
+    
+    # Longer wait for 5000 records (120s for Firehose buffer)
+    run_single_test "Thundering Herd (5000 records)" "$config" 5000 120
+}
+
 # =============================================================================
 # MAIN
 # =============================================================================
@@ -324,8 +353,9 @@ print_usage() {
     echo "Commands:"
     echo "  unit      Run unit tests only (pytest)"
     echo "  deploy    Deploy infrastructure (Terraform + uploads)"
-    echo "  e2e       Run full E2E test suite"
-    echo "  quick     Run quick smoke test"
+    echo "  e2e       Run full E2E test suite (9 tests)"
+    echo "  quick     Run quick smoke test (1 test)"
+    echo "  stress    Run thundering herd stress test (5000 records)"
     echo "  all       Deploy + Unit + E2E"
     echo "  status    Check infrastructure status"
     echo "  destroy   Destroy infrastructure"
@@ -346,6 +376,9 @@ case "${1:-}" in
         ;;
     quick)
         run_quick_test
+        ;;
+    stress)
+        run_stress_test
         ;;
     all)
         run_unit_tests
