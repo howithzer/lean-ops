@@ -347,23 +347,9 @@ run_e2e_tests() {
         sleep 10
     done
     
-    # Summary
-    log_step "E2E Test Summary"
-    log_info "Passed: $passed"
-    [ $failed -gt 0 ] && log_error "Failed: $failed" || log_info "Failed: $failed"
-    log_info "Duration: $(elapsed_time)"
-    
-    # Verification queries
-    log_step "Final Verification"
-    
-    raw_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_raw_db.events_staging")
-    standardized_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_standardized_db.events")
-    
-    log_info "RAW table: $raw_count records"
-    log_info "Standardized table: $standardized_count records"
-    
-    # DDL Verification - check schema drift columns were added
-    log_step "DDL Verification"
+    # Test 10: DDL Verification - check schema drift columns were added
+    log_info ""
+    log_info "[TEST] Running: DDL Schema Verification"
     
     # Expected columns from schema drift tests:
     # - test_flat_schema_evolution.json adds: customTag, extraMetric
@@ -372,11 +358,27 @@ run_e2e_tests() {
     local expected_drift_columns=("customtag" "extrametric" "newtoplevelfield")
     
     if verify_ddl_columns "${expected_drift_columns[@]}"; then
-        log_info "✅ DDL Verification PASSED"
+        log_info "✅ DDL Schema Verification PASSED"
+        ((passed++))
     else
-        log_warn "⚠️ DDL Verification FAILED - some expected columns missing"
-        # Don't fail the overall test for DDL issues (may be first run)
+        log_error "❌ DDL Schema Verification FAILED"
+        ((failed++))
     fi
+    
+    # Final record count verification
+    log_step "Final Verification"
+    
+    raw_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_raw_db.events_staging")
+    standardized_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_standardized_db.events")
+    
+    log_info "RAW table: $raw_count records"
+    log_info "Standardized table: $standardized_count records"
+    
+    # Summary (now at the end)
+    log_step "E2E Test Summary"
+    log_info "Passed: $passed"
+    [ $failed -gt 0 ] && log_error "Failed: $failed" || log_info "Failed: $failed"
+    log_info "Duration: $(elapsed_time)"
     
     # Return failure if any test failed
     [ $failed -eq 0 ]
@@ -399,7 +401,7 @@ run_quick_test() {
 }
 
 run_stress_test() {
-    log_step "Thundering Herd Stress Test"
+    log_step "Thundering Herd Stress Test (100K records)"
     
     get_state_machine_arn || { log_error "Deploy infrastructure first"; exit 1; }
     
@@ -409,10 +411,11 @@ run_stress_test() {
         exit 1
     fi
     
-    log_warn "This test sends 5000 records - may take 5+ minutes"
+    log_warn "This test sends 100,000 records - may take 15+ minutes"
+    log_info "Scale test for: Firehose throughput, Glue processing, Iceberg writes"
     
-    # Longer wait for 5000 records (120s for Firehose buffer)
-    run_single_test "Thundering Herd (5000 records)" "$config" 5000 120
+    # Longer wait for 100K records (180s for Firehose buffer to flush)
+    run_single_test "Thundering Herd (100K records)" "$config" 100000 180
 }
 
 # =============================================================================
@@ -425,9 +428,9 @@ print_usage() {
     echo "Commands:"
     echo "  unit      Run unit tests only (pytest)"
     echo "  deploy    Deploy infrastructure (Terraform + uploads)"
-    echo "  e2e       Run full E2E test suite (9 tests)"
+    echo "  e2e       Run full E2E test suite (10 tests incl DDL verification)"
     echo "  quick     Run quick smoke test (1 test)"
-    echo "  stress    Run thundering herd stress test (5000 records)"
+    echo "  stress    Run thundering herd stress test (100K records)"
     echo "  all       Deploy + Unit + E2E"
     echo "  status    Check infrastructure status"
     echo "  destroy   Destroy infrastructure"
