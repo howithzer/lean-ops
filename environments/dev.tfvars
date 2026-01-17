@@ -17,4 +17,6 @@ glue_role_arn = "arn:aws:iam::487500748616:role/lean-ops-dev-glue-role"
 maximum_concurrency = 50
 
 # Scheduling
-semantic_schedule = "rate(15 minutes)"
+# NOTE: Set to 1 hour during development to avoid conflicts with manual tests
+# Production: change back to rate(15 minutes) or rate(5 minutes)
+semantic_schedule = "rate(1 hour)"
