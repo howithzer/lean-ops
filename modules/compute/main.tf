@@ -93,10 +93,10 @@ variable "raw_database" {
   default     = "iceberg_raw_db"
 }
 
-variable "curated_database" {
-  description = "Glue database name for Curated tables"
+variable "standardized_database" {
+  description = "Glue database name for Standardized tables"
   type        = string
-  default     = "iceberg_curated_db"
+  default     = "iceberg_standardized_db"
 }
 
 variable "semantic_database" {
@@ -702,7 +702,7 @@ resource "aws_lambda_function" "get_all_checkpoints" {
   environment {
     variables = {
       RAW_DATABASE      = var.raw_database
-      CURATED_DATABASE  = var.curated_database
+      STANDARDIZED_DATABASE  = var.standardized_database
       SEMANTIC_DATABASE = var.semantic_database
       CHECKPOINT_TABLE  = var.checkpoint_table_name
     }
@@ -874,18 +874,18 @@ output "check_schema_exists_arn" {
 }
 
 # =============================================================================
-# LAMBDA: ENSURE CURATED TABLE
+# LAMBDA: ENSURE STANDARDIZED TABLE
 # =============================================================================
-# Ensures Curated table exists with proper DDL from schema file
+# Ensures Standardized table exists with proper DDL from schema file
 
-data "archive_file" "ensure_curated_table" {
+data "archive_file" "ensure_standardized_table" {
   type        = "zip"
-  source_dir  = "${path.module}/.build/ensure_curated_table"
-  output_path = "${path.module}/.build/ensure_curated_table.zip"
+  source_dir  = "${path.module}/.build/ensure_standardized_table"
+  output_path = "${path.module}/.build/ensure_standardized_table.zip"
 }
 
-resource "aws_iam_role" "ensure_curated_table" {
-  name = "${local.name_prefix}-ensure-curated-table-role"
+resource "aws_iam_role" "ensure_standardized_table" {
+  name = "${local.name_prefix}-ensure-standardized-table-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -899,9 +899,9 @@ resource "aws_iam_role" "ensure_curated_table" {
   tags = local.common_tags
 }
 
-resource "aws_iam_role_policy" "ensure_curated_table" {
-  name = "${local.name_prefix}-ensure-curated-table-policy"
-  role = aws_iam_role.ensure_curated_table.id
+resource "aws_iam_role_policy" "ensure_standardized_table" {
+  name = "${local.name_prefix}-ensure-standardized-table-policy"
+  role = aws_iam_role.ensure_standardized_table.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -951,12 +951,12 @@ resource "aws_iam_role_policy" "ensure_curated_table" {
   })
 }
 
-resource "aws_lambda_function" "ensure_curated_table" {
-  filename         = data.archive_file.ensure_curated_table.output_path
-  function_name    = "${local.name_prefix}-ensure-curated-table"
-  role             = aws_iam_role.ensure_curated_table.arn
+resource "aws_lambda_function" "ensure_standardized_table" {
+  filename         = data.archive_file.ensure_standardized_table.output_path
+  function_name    = "${local.name_prefix}-ensure-standardized-table"
+  role             = aws_iam_role.ensure_standardized_table.arn
   handler          = "handler.lambda_handler"
-  source_code_hash = data.archive_file.ensure_curated_table.output_base64sha256
+  source_code_hash = data.archive_file.ensure_standardized_table.output_base64sha256
   runtime          = "python3.11"
   timeout          = 120
   memory_size      = 256
@@ -971,7 +971,7 @@ resource "aws_lambda_function" "ensure_curated_table" {
   tags = local.common_tags
 }
 
-output "ensure_curated_table_arn" {
-  description = "Ensure curated table Lambda ARN"
-  value       = aws_lambda_function.ensure_curated_table.arn
+output "ensure_standardized_table_arn" {
+  description = "Ensure standardized table Lambda ARN"
+  value       = aws_lambda_function.ensure_standardized_table.arn
 }

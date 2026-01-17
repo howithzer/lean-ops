@@ -61,7 +61,7 @@ class TestConfig:
         config = Config()
         assert config.topic_name == "events"
         assert config.raw_database == "iceberg_raw_db"
-        assert config.curated_database == "iceberg_curated_db"
+        assert config.curated_database == "iceberg_standardized_db"
         assert config.max_flatten_depth == 5
         assert config.enable_deep_flatten is True
     
@@ -69,7 +69,7 @@ class TestConfig:
         config = Config.from_env()
         assert config.topic_name == "test_topic"
         assert config.raw_database == "test_raw_db"
-        assert config.curated_database == "test_curated_db"
+        assert config.curated_database == "test_standardized_db"
         assert config.enable_deep_flatten is True
         assert config.max_flatten_depth == 3
     
@@ -91,9 +91,9 @@ class TestConfig:
         config = Config(raw_database="raw_db", topic_name="my_topic")
         assert config.raw_table == "glue_catalog.raw_db.my_topic_staging"
     
-    def test_config_curated_table_property(self):
-        config = Config(curated_database="curated_db")
-        assert config.curated_table == "glue_catalog.curated_db.events"
+    def test_config_standardized_table_property(self):
+        config = Config(curated_database="standardized_db")
+        assert config.standardized_table == "glue_catalog.standardized_db.events"
 
 
 class TestLogger:

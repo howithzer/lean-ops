@@ -57,8 +57,8 @@ variable "check_schema_lambda_arn" {
   type        = string
 }
 
-variable "ensure_curated_table_lambda_arn" {
-  description = "Ensure curated table Lambda ARN"
+variable "ensure_standardized_table_lambda_arn" {
+  description = "Ensure standardized table Lambda ARN"
   type        = string
 }
 
@@ -103,7 +103,7 @@ resource "aws_glue_job" "unified" {
 
   command {
     name            = "glueetl"
-    script_location = "s3://${var.iceberg_bucket}/glue-scripts/curated_processor.py"
+    script_location = "s3://${var.iceberg_bucket}/glue-scripts/standardized_processor.py"
     python_version  = "3"
   }
 
@@ -154,7 +154,7 @@ resource "aws_sfn_state_machine" "unified_orchestrator" {
   role_arn = aws_iam_role.step_functions.arn
 
   definition = jsonencode({
-    Comment = "Unified Orchestrator with Schema Gate - Curated + Semantic processing"
+    Comment = "Unified Orchestrator with Schema Gate - Standardized + Curated processing"
     StartAt = "CheckSchemaExists"
     States = {
       # Step 1: Check if schema file exists in S3
@@ -180,7 +180,7 @@ resource "aws_sfn_state_machine" "unified_orchestrator" {
         Choices = [{
           Variable      = "$.schemaCheck.exists"
           BooleanEquals = true
-          Next          = "EnsureCuratedTable"
+          Next          = "EnsureStandardizedTable"
         }]
         Default = "SkipNoSchema"
       }
@@ -189,19 +189,19 @@ resource "aws_sfn_state_machine" "unified_orchestrator" {
         Type   = "Pass"
         Result = {
           status = "skipped"
-          reason = "Schema file not found - topic not ready for curation"
+          reason = "Schema file not found - topic not ready for standardization"
         }
         ResultPath = "$.skipReason"
         End        = true
       }
-      # Step 3: Ensure Curated table exists with proper DDL
-      EnsureCuratedTable = {
+      # Step 3: Ensure Standardized table exists with proper DDL
+      EnsureStandardizedTable = {
         Type     = "Task"
         Resource = "arn:aws:states:::lambda:invoke"
         Parameters = {
-          FunctionName = var.ensure_curated_table_lambda_arn
+          FunctionName = var.ensure_standardized_table_lambda_arn
           Payload = {
-            "database"      = "iceberg_curated_db"
+            "database"      = "iceberg_standardized_db"
             "table.$"       = "$.topic_name"
             "schema_bucket" = var.schema_bucket
             "schema_key.$"  = "States.Format('schemas/{}.json', $.topic_name)"
@@ -214,47 +214,47 @@ resource "aws_sfn_state_machine" "unified_orchestrator" {
           "columns_count.$" = "$.Payload.columns_count"
         }
         ResultPath = "$.tableCheck"
-        Next       = "RunCurated"
+        Next       = "RunStandardized"
         Catch = [{
           ErrorEquals = ["States.ALL"]
           ResultPath  = "$.error"
           Next        = "HandleError"
         }]
       }
-      # Step 4: Run Curation Glue Job
-      RunCurated = {
+      # Step 4: Run Standardization Glue Job
+      RunStandardized = {
         Type     = "Task"
         Resource = "arn:aws:states:::glue:startJobRun.sync"
         Parameters = {
           JobName   = aws_glue_job.unified.name
           Arguments = {
-            "--topic_name.$"      = "$.topic_name"
-            "--raw_database"      = "iceberg_raw_db"
-            "--curated_database"  = "iceberg_curated_db"
-            "--checkpoint_table"  = "${local.name_prefix}-checkpoints"
-            "--iceberg_bucket"    = var.iceberg_bucket
+            "--topic_name.$"           = "$.topic_name"
+            "--raw_database"           = "iceberg_raw_db"
+            "--standardized_database"  = "iceberg_standardized_db"
+            "--checkpoint_table"       = "${local.name_prefix}-checkpoints"
+            "--iceberg_bucket"         = var.iceberg_bucket
           }
         }
         ResultPath = "$.glueResult"
-        Next       = "CheckSemanticReady"
+        Next       = "CheckCuratedReady"
         Catch = [{
           ErrorEquals = ["States.ALL"]
           ResultPath  = "$.error"
           Next        = "HandleError"
         }]
       }
-      # Step 5: Check if Semantic processing is ready
-      CheckSemanticReady = {
+      # Step 5: Check if Curated (typed/governed) processing is ready
+      CheckCuratedReady = {
         Type   = "Pass"
-        Result = { semantic_ready = false }
-        ResultPath = "$.semanticCheck"
-        Comment = "Placeholder - Semantic layer not yet implemented"
-        Next    = "SuccessCurationOnly"
+        Result = { curated_ready = false }
+        ResultPath = "$.curatedCheck"
+        Comment = "Placeholder - Curated layer not yet implemented"
+        Next    = "SuccessStandardizedOnly"
       }
       # Success states
-      SuccessCurationOnly = {
+      SuccessStandardizedOnly = {
         Type    = "Succeed"
-        Comment = "Curated succeeded, Semantic not yet implemented"
+        Comment = "Standardized succeeded, Curated not yet implemented"
       }
       # Error handling
       HandleError = {
@@ -290,7 +290,7 @@ resource "aws_iam_role_policy" "step_functions" {
         Action = ["lambda:InvokeFunction"]
         Resource = [
           var.check_schema_lambda_arn,
-          var.ensure_curated_table_lambda_arn
+          var.ensure_standardized_table_lambda_arn
         ]
       },
       {

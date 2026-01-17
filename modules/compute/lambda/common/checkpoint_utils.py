@@ -114,7 +114,7 @@ def check_schema_exists(database: str, table: str) -> bool:
 def get_all_checkpoints(
     raw_database: str,
     raw_table: str,
-    curated_database: str,
+    standardized_database: str,
     curated_table: str,
     semantic_database: str,
     semantic_table: str,
@@ -133,7 +133,7 @@ def get_all_checkpoints(
     Args:
         raw_database: Glue database for RAW tables
         raw_table: RAW table name (e.g., 'events_staging')
-        curated_database: Glue database for Curated tables
+        standardized_database: Glue database for Standardized tables
         curated_table: Curated table name
         semantic_database: Glue database for Semantic tables
         semantic_table: Semantic table name

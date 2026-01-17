@@ -254,13 +254,13 @@ class TestCheckpointUtils:
         
         data = CheckpointData(
             raw_snapshot="snap-001",
-            curated_checkpoint="snap-000",
+            standardized_checkpoint="snap-000",
             semantic_checkpoint="snap-000",
             schema_exists=True
         )
         
         assert data.raw_snapshot == "snap-001"
-        assert data.curated_checkpoint == "snap-000"
+        assert data.standardized_checkpoint == "snap-000"
         assert data.semantic_checkpoint == "snap-000"
         assert data.schema_exists is True
     
@@ -270,7 +270,7 @@ class TestCheckpointUtils:
         
         data = CheckpointData(
             raw_snapshot=None,
-            curated_checkpoint=None,
+            standardized_checkpoint=None,
             semantic_checkpoint=None,
             schema_exists=False
         )

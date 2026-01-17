@@ -216,13 +216,13 @@ resource "null_resource" "create_topic_tables" {
 # CURATED LAYER - Database and Table
 # =============================================================================
 
-resource "aws_glue_catalog_database" "curated" {
-  name        = "iceberg_curated_db"
+resource "aws_glue_catalog_database" "standardized" {
+  name        = "iceberg_standardized_db"
   description = "Curated layer database for ${var.project_name} - flattened, deduplicated, all STRING types"
 }
 
 # Curated events table with composite partitioning
-resource "null_resource" "create_curated_table" {
+resource "null_resource" "create_standardized_table" {
   triggers = {
     database = aws_glue_catalog_database.curated.name
     bucket   = var.iceberg_bucket
@@ -235,7 +235,7 @@ resource "null_resource" "create_curated_table" {
       
       echo "Creating Curated Iceberg table via Athena DDL..."
       
-      DDL="CREATE TABLE IF NOT EXISTS iceberg_curated_db.events (
+      DDL="CREATE TABLE IF NOT EXISTS iceberg_standardized_db.events (
         message_id        STRING,
         idempotency_key   STRING,
         period_reference  STRING,
@@ -253,7 +253,7 @@ resource "null_resource" "create_curated_table" {
         currency          STRING,
         user_id           STRING
       )
-      LOCATION 's3://${var.iceberg_bucket}/iceberg_curated_db/events/'
+      LOCATION 's3://${var.iceberg_bucket}/iceberg_standardized_db/events/'
       TBLPROPERTIES ('table_type' = 'ICEBERG', 'format' = 'parquet')"
       
       QUERY_ID=$(aws athena start-query-execution \
@@ -305,7 +305,7 @@ output "database_name" {
   value       = aws_glue_catalog_database.raw.name
 }
 
-output "curated_database_name" {
+output "standardized_database_name" {
   description = "Curated Glue database name"
   value       = aws_glue_catalog_database.curated.name
 }
@@ -322,6 +322,6 @@ output "topic_tables_created" {
 
 output "curated_table_created" {
   description = "Indicates Curated events table was created"
-  value       = null_resource.create_curated_table.id
+  value       = null_resource.create_standardized_table.id
 }
 

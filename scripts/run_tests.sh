@@ -107,8 +107,8 @@ verify_ddl_columns() {
     
     log_info "Verifying DDL for expected columns..."
     
-    # Get all columns from the curated table
-    local query="SHOW COLUMNS IN iceberg_curated_db.events"
+    # Get all columns from the standardized table
+    local query="SHOW COLUMNS IN iceberg_standardized_db.events"
     local query_id
     
     query_id=$(aws athena start-query-execution \
@@ -254,9 +254,9 @@ check_status() {
     raw_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_raw_db.events_staging" 2>/dev/null || echo "N/A")
     log_info "RAW table records: $raw_count"
     
-    # Check Curated table
-    curated_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_curated_db.events" 2>/dev/null || echo "N/A")
-    log_info "Curated table records: $curated_count"
+    # Check Standardized table
+    standardized_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_standardized_db.events" 2>/dev/null || echo "N/A")
+    log_info "Standardized table records: $standardized_count"
 }
 
 # =============================================================================
@@ -328,7 +328,7 @@ run_e2e_tests() {
     tests+=("Schema Drift|$CONFIGS_DIR/schema_drift_sqs.json|300|90")
     
     # Edge cases
-    tests+=("Empty Payload|$CONFIGS_DIR/test_curated_empty_payload.json|100|90")
+    tests+=("Empty Payload|$CONFIGS_DIR/test_standardized_empty_payload.json|100|90")
     
     for test_def in "${tests[@]}"; do
         IFS='|' read -r name config records wait <<< "$test_def"
@@ -357,10 +357,10 @@ run_e2e_tests() {
     log_step "Final Verification"
     
     raw_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_raw_db.events_staging")
-    curated_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_curated_db.events")
+    standardized_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_standardized_db.events")
     
     log_info "RAW table: $raw_count records"
-    log_info "Curated table: $curated_count records"
+    log_info "Standardized table: $standardized_count records"
     
     # DDL Verification - check schema drift columns were added
     log_step "DDL Verification"

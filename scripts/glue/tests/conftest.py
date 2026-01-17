@@ -59,7 +59,7 @@ def sample_config_env(clean_env):
     """
     clean_env["TOPIC_NAME"] = "test_topic"
     clean_env["RAW_DATABASE"] = "test_raw_db"
-    clean_env["CURATED_DATABASE"] = "test_curated_db"
+    clean_env["STANDARDIZED_DATABASE"] = "test_standardized_db"
     clean_env["ENABLE_DEEP_FLATTEN"] = "true"
     clean_env["MAX_FLATTEN_DEPTH"] = "3"
     return clean_env

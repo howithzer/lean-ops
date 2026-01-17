@@ -42,9 +42,9 @@ def add_missing_columns_to_table(
     Raises:
         Exception: If ALTER TABLE fails for a non-duplicate column
     """
-    # Get current curated table columns
+    # Get current standardized table columns
     try:
-        curated_cols = set(col.lower() for col in spark.table(table_name).columns)
+        standardized_cols = set(col.lower() for col in spark.table(table_name).columns)
     except Exception as e:
         logger.error("Could not get table columns for %s: %s", table_name, e)
         return []
@@ -53,7 +53,7 @@ def add_missing_columns_to_table(
     df_cols = set(col.lower() for col in df.columns)
     
     # Find new columns not in table AND not envelope variants
-    new_cols = df_cols - curated_cols - ENVELOPE_COLUMN_VARIANTS
+    new_cols = df_cols - standardized_cols - ENVELOPE_COLUMN_VARIANTS
     
     if not new_cols:
         logger.info("No new columns to add to table")

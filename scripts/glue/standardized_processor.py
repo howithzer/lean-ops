@@ -1,14 +1,14 @@
 """
-Curated Layer Processor - PySpark Glue Job
-=============================================
-RAW → Curated processing with:
+Standardized Layer Processor - PySpark Glue Job
+================================================
+RAW → Standardized processing with:
 - Dynamic schema flattening (ALL STRING)
 - Two-stage deduplication (FIFO on message_id, LIFO on idempotency_key)
 - Incremental processing via checkpoint
 - Schema evolution (column addition, NULL handling)
 
 Author: lean-ops team
-Version: 2.0.0 (refactored)
+Version: 2.1.0 (layer rename: Curated → Standardized)
 """
 
 import sys
@@ -42,7 +42,7 @@ args = getResolvedOptions(sys.argv, [
     'JOB_NAME',
     'topic_name',
     'raw_database',
-    'curated_database',
+    'standardized_database',
     'checkpoint_table',
     'iceberg_bucket'
 ])
@@ -55,7 +55,7 @@ job.init(args['JOB_NAME'], args)
 
 TOPIC_NAME = args['topic_name']
 RAW_DATABASE = args['raw_database']
-CURATED_DATABASE = args['curated_database']
+STANDARDIZED_DATABASE = args['standardized_database']
 CHECKPOINT_TABLE = args['checkpoint_table']
 ICEBERG_BUCKET = args['iceberg_bucket']
 ICEBERG_WAREHOUSE = f"s3://{ICEBERG_BUCKET}/"
@@ -67,7 +67,7 @@ spark.conf.set("spark.sql.catalog.glue_catalog.warehouse", ICEBERG_WAREHOUSE)
 
 # Full table paths (must use glue_catalog prefix!)
 RAW_TABLE = f"glue_catalog.{RAW_DATABASE}.{TOPIC_NAME}_staging"
-CURATED_TABLE = f"glue_catalog.{CURATED_DATABASE}.events"
+STANDARDIZED_TABLE = f"glue_catalog.{STANDARDIZED_DATABASE}.events"
 
 
 # =============================================================================
@@ -90,8 +90,8 @@ def get_last_checkpoint(topic_name: str) -> int:
     
     try:
         response = table.get_item(Key={
-            'pipeline_id': f'curation_{topic_name}',
-            'checkpoint_type': 'curated'
+            'pipeline_id': f'standardization_{topic_name}',
+            'checkpoint_type': 'standardized'
         })
         if 'Item' in response:
             checkpoint = int(response['Item'].get('last_ingestion_ts', 0))
@@ -116,13 +116,13 @@ def update_checkpoint(topic_name: str, checkpoint_value: int) -> None:
     table = dynamodb.Table(CHECKPOINT_TABLE)
     
     table.put_item(Item={
-        'pipeline_id': f'curation_{topic_name}',
-        'checkpoint_type': 'curated',
+        'pipeline_id': f'standardization_{topic_name}',
+        'checkpoint_type': 'standardized',
         'last_ingestion_ts': checkpoint_value,
         'updated_at': datetime.utcnow().isoformat()
     })
     
-    logger.info("Checkpoint updated: curation_%s/curated -> %d", topic_name, checkpoint_value)
+    logger.info("Checkpoint updated: standardization_%s/standardized -> %d", topic_name, checkpoint_value)
 
 
 # =============================================================================
@@ -160,8 +160,8 @@ def dedup_stage1_fifo(df):
 # =============================================================================
 
 def main():
-    """Main entry point for Curated processing."""
-    logger.info("Starting Curated processing for topic: %s", TOPIC_NAME)
+    """Main entry point for Standardized processing."""
+    logger.info("Starting Standardized processing for topic: %s", TOPIC_NAME)
     
     # Get last checkpoint
     last_checkpoint = get_last_checkpoint(TOPIC_NAME)
@@ -192,29 +192,29 @@ def main():
     # SCHEMA EVOLUTION Step 1: Safe cast all columns to STRING
     df_flattened = safe_cast_to_string(df_flattened)
     
-    # SCHEMA EVOLUTION Step 2: Add new columns to Curated table
-    new_cols = add_missing_columns_to_table(spark, df_flattened, CURATED_TABLE)
+    # SCHEMA EVOLUTION Step 2: Add new columns to Standardized table
+    new_cols = add_missing_columns_to_table(spark, df_flattened, STANDARDIZED_TABLE)
     if new_cols:
         logger.info("Schema evolved: %d new columns added", len(new_cols))
     
     # SCHEMA EVOLUTION Step 3: Align DataFrame to table schema
-    df_aligned = align_dataframe_to_table(spark, df_flattened, CURATED_TABLE)
+    df_aligned = align_dataframe_to_table(spark, df_flattened, STANDARDIZED_TABLE)
     logger.info("DataFrame aligned to table schema")
     
-    # Check if this is first run (Curated table is empty)
+    # Check if this is first run (Standardized table is empty)
     is_first_run = True
     try:
-        snapshots_df = spark.sql(f"SELECT * FROM {CURATED_TABLE}.snapshots LIMIT 1")
+        snapshots_df = spark.sql(f"SELECT * FROM {STANDARDIZED_TABLE}.snapshots LIMIT 1")
         if snapshots_df.count() > 0:
             is_first_run = False
-            logger.info("Curated table has existing snapshots")
+            logger.info("Standardized table has existing snapshots")
     except Exception as e:
         logger.info("First run detected (no snapshots): %s", e)
     
     if is_first_run:
         # First run: Use writeTo() for initial load
         logger.info("First run - using writeTo() for initial load")
-        df_aligned.writeTo(CURATED_TABLE).using("iceberg").createOrReplace()
+        df_aligned.writeTo(STANDARDIZED_TABLE).using("iceberg").createOrReplace()
         logger.info("Initial data loaded successfully")
     else:
         # Subsequent runs: Use MERGE for LIFO dedup on idempotency_key
@@ -226,7 +226,7 @@ def main():
         insert_vals = ", ".join([f"s.{c}" for c in columns])
         
         merge_sql = f"""
-        MERGE INTO {CURATED_TABLE} t
+        MERGE INTO {STANDARDIZED_TABLE} t
         USING staged_data s
         ON t.idempotency_key = s.idempotency_key
         WHEN MATCHED AND s.publish_time > t.publish_time THEN
@@ -244,8 +244,8 @@ def main():
     update_checkpoint(TOPIC_NAME, max_ingestion_ts)
     
     # Get final count
-    final_count = spark.table(CURATED_TABLE).count()
-    logger.info("Curated table now has %d total records", final_count)
+    final_count = spark.table(STANDARDIZED_TABLE).count()
+    logger.info("Standardized table now has %d total records", final_count)
     
     job.commit()
     logger.info("Job completed successfully")

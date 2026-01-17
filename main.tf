@@ -219,7 +219,7 @@ module "orchestration" {
   schema_bucket                   = var.iceberg_bucket
   glue_role_arn                   = module.compute.glue_role_arn
   check_schema_lambda_arn         = module.compute.check_schema_exists_arn
-  ensure_curated_table_lambda_arn = module.compute.ensure_curated_table_arn
+  ensure_standardized_table_lambda_arn = module.compute.ensure_standardized_table_arn
   alerts_topic_arn                = module.observability.alerts_topic_arn
   tags                            = local.common_tags
 

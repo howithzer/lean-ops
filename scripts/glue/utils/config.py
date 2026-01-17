@@ -1,6 +1,6 @@
 """
-Configuration for Curated Processor
-====================================
+Configuration for Standardized Processor
+=========================================
 Centralizes all configuration values with environment variable support.
 Enables flexible deployment across dev/staging/prod environments.
 """
@@ -72,7 +72,7 @@ def get_env_int(key: str, default: int = 0) -> int:
 @dataclass(frozen=True)
 class Config:
     """
-    Immutable configuration for the Curated Processor.
+    Immutable configuration for the Standardized Processor.
     
     All values can be overridden via environment variables.
     Use Config.from_env() to create an instance from environment.
@@ -84,7 +84,8 @@ class Config:
     # Pipeline settings
     topic_name: str = "events"
     raw_database: str = "iceberg_raw_db"
-    curated_database: str = "iceberg_curated_db"
+    standardized_database: str = "iceberg_standardized_db"
+    curated_database: str = "iceberg_curated_db"  # New: for typed/governed data
     checkpoint_table: str = "lean-ops-checkpoints"
     iceberg_bucket: str = "lean-ops-development-iceberg"
     
@@ -122,6 +123,7 @@ class Config:
         defaults = {
             "topic_name": get_env("TOPIC_NAME", "events"),
             "raw_database": get_env("RAW_DATABASE", "iceberg_raw_db"),
+            "standardized_database": get_env("STANDARDIZED_DATABASE", "iceberg_standardized_db"),
             "curated_database": get_env("CURATED_DATABASE", "iceberg_curated_db"),
             "checkpoint_table": get_env("CHECKPOINT_TABLE", "lean-ops-checkpoints"),
             "iceberg_bucket": get_env("ICEBERG_BUCKET", "lean-ops-development-iceberg"),
@@ -148,8 +150,13 @@ class Config:
         return f"glue_catalog.{self.raw_database}.{self.topic_name}_staging"
     
     @property
+    def standardized_table(self) -> str:
+        """Fully qualified Standardized table name."""
+        return f"glue_catalog.{self.standardized_database}.events"
+    
+    @property
     def curated_table(self) -> str:
-        """Fully qualified Curated table name."""
+        """Fully qualified Curated table name (typed/governed)."""
         return f"glue_catalog.{self.curated_database}.events"
 
 

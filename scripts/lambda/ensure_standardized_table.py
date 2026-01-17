@@ -1,5 +1,5 @@
 """
-Lambda: ensure_curated_table
+Lambda: ensure_standardized_table
 ============================
 Ensures a Curated table exists with proper DDL, partitioning, and properties.
 Reads schema from S3 and generates CREATE TABLE + ALTER TABLE statements.
@@ -30,7 +30,7 @@ def lambda_handler(event, context):
     
     Input:
         {
-            "database": "iceberg_curated_db",
+            "database": "iceberg_standardized_db",
             "table": "events",
             "schema_bucket": "lean-ops-development-iceberg",
             "schema_key": "schemas/events.json",
@@ -40,7 +40,7 @@ def lambda_handler(event, context):
     Output:
         {
             "status": "created" | "exists",
-            "table": "iceberg_curated_db.events",
+            "table": "iceberg_standardized_db.events",
             "columns_count": 16
         }
     """

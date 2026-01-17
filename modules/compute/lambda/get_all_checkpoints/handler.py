@@ -21,7 +21,7 @@ from common.checkpoint_utils import get_all_checkpoints
 
 # Environment variables
 RAW_DATABASE = os.environ.get('RAW_DATABASE', 'iceberg_raw_db')
-CURATED_DATABASE = os.environ.get('CURATED_DATABASE', 'iceberg_curated_db')
+STANDARDIZED_DATABASE = os.environ.get('STANDARDIZED_DATABASE', 'iceberg_standardized_db')
 SEMANTIC_DATABASE = os.environ.get('SEMANTIC_DATABASE', 'iceberg_semantic_db')
 CHECKPOINT_TABLE = os.environ.get('CHECKPOINT_TABLE', 'lean-ops-checkpoints')
 
@@ -58,7 +58,7 @@ def lambda_handler(event, context):
     checkpoints = get_all_checkpoints(
         raw_database=RAW_DATABASE,
         raw_table=raw_table,
-        curated_database=CURATED_DATABASE,
+        standardized_database=STANDARDIZED_DATABASE,
         curated_table=curated_table,
         semantic_database=SEMANTIC_DATABASE,
         semantic_table=semantic_table,
