@@ -1,0 +1,16 @@
+{
+    "schema_file": "../../Testing_Framework_EEH_2.0/sample-data-generator/schemas/iceberg_raw.json",
+    "total_records": 100,
+    "batch_size": 50,
+    "concurrency": 5,
+    "sink": {
+        "type": "sqs",
+        "queue_url": "https://sqs.us-east-1.amazonaws.com/487500748616/lean-ops-events-queue"
+    },
+    "drift": {
+        "enabled": false
+    },
+    "duplicate": {
+        "enabled": false
+    }
+}
