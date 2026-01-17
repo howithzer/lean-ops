@@ -213,18 +213,18 @@ resource "null_resource" "create_topic_tables" {
 }
 
 # =============================================================================
-# CURATED LAYER - Database and Table
+# STANDARDIZED LAYER - Database and Table
 # =============================================================================
 
 resource "aws_glue_catalog_database" "standardized" {
   name        = "iceberg_standardized_db"
-  description = "Curated layer database for ${var.project_name} - flattened, deduplicated, all STRING types"
+  description = "Standardized layer database for ${var.project_name} - flattened, deduplicated, all STRING types"
 }
 
-# Curated events table with composite partitioning
+# Standardized events table with composite partitioning
 resource "null_resource" "create_standardized_table" {
   triggers = {
-    database = aws_glue_catalog_database.curated.name
+    database = aws_glue_catalog_database.standardized.name
     bucket   = var.iceberg_bucket
   }
 
@@ -233,7 +233,7 @@ resource "null_resource" "create_standardized_table" {
     command     = <<-EOT
       set -e
       
-      echo "Creating Curated Iceberg table via Athena DDL..."
+      echo "Creating Standardized Iceberg table via Athena DDL..."
       
       DDL="CREATE TABLE IF NOT EXISTS iceberg_standardized_db.events (
         message_id        STRING,
@@ -274,7 +274,7 @@ resource "null_resource" "create_standardized_table" {
         echo "Query status: $STATUS"
         
         if [ "$STATUS" = "SUCCEEDED" ]; then
-          echo "Curated events table created successfully!"
+          echo "Standardized events table created successfully!"
           exit 0
         elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "CANCELLED" ]; then
           ERROR=$(aws athena get-query-execution \
@@ -293,7 +293,7 @@ resource "null_resource" "create_standardized_table" {
     EOT
   }
 
-  depends_on = [aws_glue_catalog_database.curated]
+  depends_on = [aws_glue_catalog_database.standardized]
 }
 
 # =============================================================================
@@ -306,8 +306,8 @@ output "database_name" {
 }
 
 output "standardized_database_name" {
-  description = "Curated Glue database name"
-  value       = aws_glue_catalog_database.curated.name
+  description = "Standardized Glue database name"
+  value       = aws_glue_catalog_database.standardized.name
 }
 
 output "default_table_created" {
@@ -320,8 +320,8 @@ output "topic_tables_created" {
   value       = { for k, v in null_resource.create_topic_tables : k => v.id }
 }
 
-output "curated_table_created" {
-  description = "Indicates Curated events table was created"
+output "standardized_table_created" {
+  description = "Indicates Standardized events table was created"
   value       = null_resource.create_standardized_table.id
 }
 

@@ -366,10 +366,10 @@ run_e2e_tests() {
     log_step "DDL Verification"
     
     # Expected columns from schema drift tests:
-    # - test_column_addition.json adds: extraField, newMetric, customTag
-    # - test_flat_schema_evolution.json adds deep nested columns
-    # - schema_drift_sqs.json adds various drift columns
-    local expected_drift_columns=("extrafield" "newmetric" "customtag")
+    # - test_flat_schema_evolution.json adds: customTag, extraMetric
+    # - schema_drift_sqs.json adds: newTopLevelField, and nested fields
+    # Column names are lowercased by Iceberg
+    local expected_drift_columns=("customtag" "extrametric" "newtoplevelfield")
     
     if verify_ddl_columns "${expected_drift_columns[@]}"; then
         log_info "✅ DDL Verification PASSED"
