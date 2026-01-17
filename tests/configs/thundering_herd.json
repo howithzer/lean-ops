@@ -1,14 +1,14 @@
 {
     "name": "Thundering Herd: Events",
-    "description": "High volume stress test - 5000 records",
+    "description": "High volume stress test - 100,000 records",
     "run_mode": "local",
     "log_format": "user",
     "log_level": "INFO",
     "sink_type": "sqs",
-    "concurrency": 10,
+    "concurrency": 20,
     "batch_size": 100,
-    "total_records": 5000,
-    "metrics_interval_seconds": 5,
+    "total_records": 100000,
+    "metrics_interval_seconds": 10,
     "schema_config": {
         "base_schema": "../../Testing_Framework_EEH_2.0/sample-data-generator/schemas/iceberg_raw_events_v2.json",
         "drift": {
