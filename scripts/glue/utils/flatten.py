@@ -2,14 +2,17 @@
 JSON Flatten Utilities for Curated Processor
 =============================================
 Provides deep JSON flattening with configurable depth and envelope exclusion.
+
+Pure Python functions (recursive_flatten, sanitize_column_name) can be used
+without Spark. Spark-dependent functions require pyspark at runtime.
 """
 
 import json
-from typing import List, Tuple, Set, Optional, Any
+from typing import List, Tuple, Set, Optional, Any, TYPE_CHECKING
 
-from pyspark.sql import DataFrame
-from pyspark.sql import functions as F
-from pyspark.sql.types import StringType
+# Conditional Spark imports - allows testing pure Python functions without Spark
+if TYPE_CHECKING:
+    from pyspark.sql import DataFrame
 
 from .config import (
     get_logger,
@@ -135,7 +138,14 @@ def create_key_extractor(target_key: str, max_depth: int = MAX_FLATTEN_DEPTH):
     
     Returns:
         Spark UDF that extracts the key value as STRING
+    
+    Raises:
+        ImportError: If pyspark is not installed
     """
+    # Runtime import - allows pure Python functions to be tested without Spark
+    from pyspark.sql import functions as F
+    from pyspark.sql.types import StringType
+    
     def extract_key(json_str: Optional[str]) -> Optional[str]:
         if not json_str:
             return None
@@ -173,6 +183,9 @@ def flatten_json_payload(
         Output: {"user_id": "123"}
     """
     logger.info("Starting deep flatten (max_depth=%d)...", max_depth)
+    
+    # Runtime import - allows pure Python functions to be tested without Spark
+    from pyspark.sql import functions as F
     
     # Discover all keys from sample
     all_keys = discover_payload_keys(df, FLATTEN_SAMPLE_SIZE, max_depth)
