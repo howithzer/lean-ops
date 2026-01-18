@@ -325,7 +325,6 @@ resource "null_resource" "create_standardized_parse_errors" {
         'table_type' = 'ICEBERG',
         'format' = 'parquet',
         'write.format.default' = 'parquet',
-        'format-version' = '2'
       )"
       
       QUERY_ID=$(aws athena start-query-execution \
@@ -407,7 +406,6 @@ resource "null_resource" "create_curated_events" {
         'table_type' = 'ICEBERG',
         'format' = 'parquet',
         'write.format.default' = 'parquet',
-        'format-version' = '2'
       )"
       
       QUERY_ID=$(aws athena start-query-execution \
@@ -467,7 +465,6 @@ resource "null_resource" "create_curated_errors" {
       TBLPROPERTIES (
         'table_type' = 'ICEBERG',
         'format' = 'parquet',
-        'format-version' = '2'
       )"
       
       QUERY_ID=$(aws athena start-query-execution \
@@ -527,7 +524,6 @@ resource "null_resource" "create_curated_drift_log" {
       TBLPROPERTIES (
         'table_type' = 'ICEBERG',
         'format' = 'parquet',
-        'format-version' = '2'
       )"
       
       QUERY_ID=$(aws athena start-query-execution \
