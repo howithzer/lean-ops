@@ -322,8 +322,7 @@ resource "null_resource" "create_standardized_parse_errors" {
       LOCATION 's3://${var.iceberg_bucket}/iceberg_standardized_db/parse_errors/'
       TBLPROPERTIES (
         'table_type' = 'ICEBERG',
-        'format' = 'parquet',
-        'write.format.default' = 'parquet'
+        'format' = 'parquet'
       )"
       
       QUERY_ID=$(aws athena start-query-execution \
@@ -402,8 +401,7 @@ resource "null_resource" "create_curated_events" {
       LOCATION 's3://${var.iceberg_bucket}/iceberg_curated_db/events/'
       TBLPROPERTIES (
         'table_type' = 'ICEBERG',
-        'format' = 'parquet',
-        'write.format.default' = 'parquet'
+        'format' = 'parquet'
       )"
       
       QUERY_ID=$(aws athena start-query-execution \
@@ -461,7 +459,7 @@ resource "null_resource" "create_curated_errors" {
       LOCATION 's3://${var.iceberg_bucket}/iceberg_curated_db/errors/'
       TBLPROPERTIES (
         'table_type' = 'ICEBERG',
-        'format' = 'parquet',
+        'format' = 'parquet'
       )"
       
       QUERY_ID=$(aws athena start-query-execution \
@@ -519,7 +517,7 @@ resource "null_resource" "create_curated_drift_log" {
       LOCATION 's3://${var.iceberg_bucket}/iceberg_curated_db/drift_log/'
       TBLPROPERTIES (
         'table_type' = 'ICEBERG',
-        'format' = 'parquet',
+        'format' = 'parquet'
       )"
       
       QUERY_ID=$(aws athena start-query-execution \
