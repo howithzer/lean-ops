@@ -370,9 +370,20 @@ run_e2e_tests() {
     
     raw_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_raw_db.events_staging")
     standardized_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_standardized_db.events")
+    curated_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_curated_db.events" 2>/dev/null || echo "0")
+    curated_errors=$(run_athena_query "SELECT COUNT(*) FROM iceberg_curated_db.errors" 2>/dev/null || echo "0")
     
     log_info "RAW table: $raw_count records"
     log_info "Standardized table: $standardized_count records"
+    log_info "Curated table: $curated_count records"
+    [ "$curated_errors" != "0" ] && log_warn "Curated errors: $curated_errors records"
+    
+    # Curated layer status
+    if [ "$curated_count" != "0" ]; then
+        log_info "✅ Curated layer processed data successfully"
+    else
+        log_warn "⚠️ Curated layer has no data (schema may not be uploaded)"
+    fi
     
     # Summary (now at the end)
     log_step "E2E Test Summary"
