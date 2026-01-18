@@ -319,7 +319,6 @@ resource "null_resource" "create_standardized_parse_errors" {
         ingestion_ts      BIGINT,
         processed_ts      TIMESTAMP
       )
-      PARTITIONED BY (days(processed_ts))
       LOCATION 's3://${var.iceberg_bucket}/iceberg_standardized_db/parse_errors/'
       TBLPROPERTIES (
         'table_type' = 'ICEBERG',
@@ -400,7 +399,6 @@ resource "null_resource" "create_curated_events" {
         last_updated_ts     TIMESTAMP,
         _schema_version     STRING
       )
-      PARTITIONED BY (days(event_timestamp))
       LOCATION 's3://${var.iceberg_bucket}/iceberg_curated_db/events/'
       TBLPROPERTIES (
         'table_type' = 'ICEBERG',
@@ -460,7 +458,6 @@ resource "null_resource" "create_curated_errors" {
         error_message     STRING,
         processed_ts      TIMESTAMP
       )
-      PARTITIONED BY (days(processed_ts))
       LOCATION 's3://${var.iceberg_bucket}/iceberg_curated_db/errors/'
       TBLPROPERTIES (
         'table_type' = 'ICEBERG',
@@ -519,7 +516,6 @@ resource "null_resource" "create_curated_drift_log" {
         new_value         STRING,
         details           STRING
       )
-      PARTITIONED BY (days(detected_ts))
       LOCATION 's3://${var.iceberg_bucket}/iceberg_curated_db/drift_log/'
       TBLPROPERTIES (
         'table_type' = 'ICEBERG',
