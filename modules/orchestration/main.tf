@@ -282,8 +282,8 @@ resource "aws_sfn_state_machine" "unified_orchestrator" {
         Parameters = {
           FunctionName = var.check_schema_lambda_arn
           Payload = {
-            "topic_name.$" = "$.topic_name"
-            schema_key     = "schemas/curated_schema.json"
+            "bucket" = var.schema_bucket
+            "key"    = "schemas/curated_schema.json"
           }
         }
         ResultPath = "$.curatedSchemaCheck"
@@ -298,7 +298,7 @@ resource "aws_sfn_state_machine" "unified_orchestrator" {
       CuratedSchemaChoice = {
         Type = "Choice"
         Choices = [{
-          Variable      = "$.curatedSchemaCheck.Payload.schema_exists"
+          Variable      = "$.curatedSchemaCheck.Payload.exists"
           BooleanEquals = true
           Next          = "RunCurated"
         }]
