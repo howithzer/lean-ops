@@ -314,7 +314,7 @@ resource "aws_sfn_state_machine" "unified_orchestrator" {
             "--topic_name.$"           = "$.topic_name"
             "--standardized_database"  = "iceberg_standardized_db"
             "--curated_database"       = "iceberg_curated_db"
-            "--checkpoint_table"       = var.checkpoint_table_name
+            "--checkpoint_table"       = "${local.name_prefix}-checkpoints"
             "--iceberg_bucket"         = var.iceberg_bucket
             "--schema_bucket"          = var.iceberg_bucket
           }
