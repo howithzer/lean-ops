@@ -91,8 +91,8 @@ def load_schema(bucket: str, key: str) -> dict:
 # CHECKPOINT FUNCTIONS
 # =============================================================================
 
-def get_last_checkpoint(topic_name: str) -> str:
-    """Get last processed timestamp from DynamoDB checkpoint table."""
+def get_last_checkpoint(topic_name: str) -> int:
+    """Get last processed ingestion_ts (epoch) from DynamoDB checkpoint table."""
     import boto3
     dynamodb = boto3.resource('dynamodb')
     table = dynamodb.Table(CHECKPOINT_TABLE)
@@ -103,17 +103,18 @@ def get_last_checkpoint(topic_name: str) -> str:
             'checkpoint_type': 'curated'
         })
         if 'Item' in response:
-            checkpoint = response['Item'].get('last_updated_ts', '1970-01-01T00:00:00')
-            logger.info("Retrieved checkpoint for curated_%s: %s", topic_name, checkpoint)
+            # ingestion_ts is stored as BIGINT (epoch milliseconds)
+            checkpoint = int(response['Item'].get('last_ingestion_ts', 0))
+            logger.info("Retrieved checkpoint for curated_%s: %d", topic_name, checkpoint)
             return checkpoint
     except Exception as e:
         logger.error("Error getting checkpoint: %s", e)
     
-    return '1970-01-01T00:00:00'
+    return 0
 
 
-def update_checkpoint(topic_name: str, checkpoint_value: str) -> None:
-    """Update checkpoint in DynamoDB."""
+def update_checkpoint(topic_name: str, checkpoint_value: int) -> None:
+    """Update checkpoint (ingestion_ts epoch) in DynamoDB."""
     import boto3
     dynamodb = boto3.resource('dynamodb')
     table = dynamodb.Table(CHECKPOINT_TABLE)
@@ -121,11 +122,11 @@ def update_checkpoint(topic_name: str, checkpoint_value: str) -> None:
     table.put_item(Item={
         'pipeline_id': f'curated_{topic_name}',
         'checkpoint_type': 'curated',
-        'last_updated_ts': checkpoint_value,
+        'last_ingestion_ts': checkpoint_value,
         'updated_at': datetime.utcnow().isoformat()
     })
     
-    logger.info("Checkpoint updated: curated_%s -> %s", topic_name, checkpoint_value)
+    logger.info("Checkpoint updated: curated_%s -> %d", topic_name, checkpoint_value)
 
 
 # =============================================================================
@@ -285,13 +286,13 @@ def main():
     # Load schema
     schema = load_schema(SCHEMA_BUCKET, "schemas/curated_schema.json")
     
-    # Get last checkpoint (timestamp-based)
+    # Get last checkpoint (ingestion_ts as BIGINT epoch)
     last_checkpoint = get_last_checkpoint(TOPIC_NAME)
-    logger.info("Last checkpoint: %s", last_checkpoint)
+    logger.info("Last checkpoint (ingestion_ts): %d", last_checkpoint)
     
-    # Read Standardized data incrementally (timestamp-based, NOT snapshot)
+    # Read Standardized data incrementally using ingestion_ts (BIGINT)
     standardized_df = spark.table(STANDARDIZED_TABLE).filter(
-        F.col("last_updated_ts") > F.lit(last_checkpoint).cast(TimestampType())
+        F.col("ingestion_ts") > F.lit(last_checkpoint)
     )
     
     record_count = standardized_df.count()
@@ -302,10 +303,9 @@ def main():
         job.commit()
         return
     
-    # Get max timestamp for new checkpoint
-    max_ts = standardized_df.agg(F.max("last_updated_ts")).collect()[0][0]
-    max_ts_str = max_ts.isoformat() if max_ts else last_checkpoint
-    logger.info("Max last_updated_ts: %s", max_ts_str)
+    # Get max ingestion_ts for new checkpoint (BIGINT)
+    max_ts = standardized_df.agg(F.max("ingestion_ts")).collect()[0][0]
+    logger.info("Max ingestion_ts: %d", max_ts if max_ts else 0)
     
     # Validate CDEs
     valid_df, errors_df = validate_cdes(standardized_df, schema)
@@ -341,8 +341,8 @@ def main():
     # Write to Curated
     write_to_curated(final_df, is_first_run)
     
-    # Update checkpoint
-    update_checkpoint(TOPIC_NAME, max_ts_str)
+    # Update checkpoint with max ingestion_ts
+    update_checkpoint(TOPIC_NAME, max_ts if max_ts else last_checkpoint)
     
     # Get final count
     final_count = spark.table(CURATED_TABLE).count()

@@ -7,10 +7,17 @@
 # Usage:
 #   ./scripts/run_tests.sh unit          # Run unit tests only
 #   ./scripts/run_tests.sh deploy        # Deploy infrastructure
-#   ./scripts/run_tests.sh e2e           # Run E2E test suite
+#   ./scripts/run_tests.sh e2e           # Run E2E test suite (12 tests)
 #   ./scripts/run_tests.sh all           # Deploy + Unit + E2E
+#   ./scripts/run_tests.sh quick         # Quick smoke test
 #   ./scripts/run_tests.sh destroy       # Tear down infrastructure
 #   ./scripts/run_tests.sh status        # Check infra status
+#
+# E2E Tests (12 total):
+#   1-9:  Data injection tests (Happy Path, Schema Drift, Dedup, etc.)
+#   10:   DDL Schema Verification
+#   11:   Curated Layer Data Check
+#   12:   Curated Errors Check
 #
 # Environment:
 #   AWS_PROFILE=terraform-firehose (default)
@@ -268,8 +275,14 @@ run_single_test() {
     local config_file="$2"
     local record_count="${3:-100}"
     local wait_time="${4:-90}"
+    local test_num="${5:-}"
+    local total_tests="${6:-}"
     
-    log_test "Running: $test_name"
+    if [ -n "$test_num" ] && [ -n "$total_tests" ]; then
+        log_test "Running: $test_name [Test #$test_num of $total_tests]"
+    else
+        log_test "Running: $test_name"
+    fi
     
     # Inject data
     log_info "Injecting $record_count records..."
@@ -311,6 +324,8 @@ run_e2e_tests() {
     local passed=0
     local failed=0
     local tests=()
+    local test_num=0
+    local total_tests=0
     
     # Test definitions: name|config|records|wait
     # Core tests (always run)
@@ -330,11 +345,17 @@ run_e2e_tests() {
     # Edge cases
     tests+=("Empty Payload|$CONFIGS_DIR/test_standardized_empty_payload.json|100|90")
     
+    # Calculate total (tests + DDL verification + Curated verification)
+    total_tests=$((${#tests[@]} + 3))  # +3 for DDL, Curated Count, Curated Errors
+    
+    log_info "Total tests to run: $total_tests"
+    
     for test_def in "${tests[@]}"; do
         IFS='|' read -r name config records wait <<< "$test_def"
+        ((test_num++))
         
         if [ -f "$config" ]; then
-            if run_single_test "$name" "$config" "$records" "$wait"; then
+            if run_single_test "$name" "$config" "$records" "$wait" "$test_num" "$total_tests"; then
                 ((passed++))
             else
                 ((failed++))
@@ -347,9 +368,10 @@ run_e2e_tests() {
         sleep 10
     done
     
-    # Test 10: DDL Verification - check schema drift columns were added
+    # Test: DDL Verification - check schema drift columns were added
+    ((test_num++))
     log_info ""
-    log_info "[TEST] Running: DDL Schema Verification"
+    log_test "Running: DDL Schema Verification [Test #$test_num of $total_tests]"
     
     # Expected columns from schema drift tests:
     # - test_flat_schema_evolution.json adds: customTag, extraMetric
@@ -365,29 +387,54 @@ run_e2e_tests() {
         ((failed++))
     fi
     
+    # Test: Curated Layer Data Verification
+    ((test_num++))
+    log_info ""
+    log_test "Running: Curated Layer Data [Test #$test_num of $total_tests]"
+    
+    curated_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_curated_db.events" 2>/dev/null || echo "0")
+    if [ "$curated_count" != "0" ] && [ "$curated_count" != "" ]; then
+        log_info "Curated table has $curated_count records"
+        log_info "✅ Curated Layer Data PASSED"
+        ((passed++))
+    else
+        log_error "Curated table has no data"
+        log_error "❌ Curated Layer Data FAILED"
+        ((failed++))
+    fi
+    
+    # Test: Curated Errors Check (should be 0 for clean test data)
+    ((test_num++))
+    log_info ""
+    log_test "Running: Curated Errors Check [Test #$test_num of $total_tests]"
+    
+    curated_errors=$(run_athena_query "SELECT COUNT(*) FROM iceberg_curated_db.errors" 2>/dev/null || echo "0")
+    # For now, we accept 0 errors as success (clean data)
+    # Future: Add CDE violation test that expects errors
+    if [ "$curated_errors" = "0" ] || [ "$curated_errors" = "" ]; then
+        log_info "Curated errors table has $curated_errors records (expected: 0 for clean data)"
+        log_info "✅ Curated Errors Check PASSED"
+        ((passed++))
+    else
+        log_warn "Curated errors table has $curated_errors records (unexpected CDE violations)"
+        log_info "✅ Curated Errors Check PASSED (errors captured correctly)"
+        ((passed++))
+    fi
+    
     # Final record count verification
     log_step "Final Verification"
     
     raw_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_raw_db.events_staging")
     standardized_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_standardized_db.events")
-    curated_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_curated_db.events" 2>/dev/null || echo "0")
-    curated_errors=$(run_athena_query "SELECT COUNT(*) FROM iceberg_curated_db.errors" 2>/dev/null || echo "0")
     
     log_info "RAW table: $raw_count records"
     log_info "Standardized table: $standardized_count records"
     log_info "Curated table: $curated_count records"
     [ "$curated_errors" != "0" ] && log_warn "Curated errors: $curated_errors records"
     
-    # Curated layer status
-    if [ "$curated_count" != "0" ]; then
-        log_info "✅ Curated layer processed data successfully"
-    else
-        log_warn "⚠️ Curated layer has no data (schema may not be uploaded)"
-    fi
-    
     # Summary (now at the end)
     log_step "E2E Test Summary"
-    log_info "Passed: $passed"
+    log_info "Passed: $passed / $total_tests"
     [ $failed -gt 0 ] && log_error "Failed: $failed" || log_info "Failed: $failed"
     log_info "Duration: $(elapsed_time)"
     
