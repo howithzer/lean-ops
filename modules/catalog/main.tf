@@ -381,27 +381,22 @@ resource "null_resource" "create_curated_events" {
       echo "Creating Curated events table via Athena DDL..."
       
       DDL="CREATE TABLE IF NOT EXISTS iceberg_curated_db.events (
-        -- Identifiers
         message_id          STRING,
         idempotency_key     STRING,
         
-        -- Event Details (TYPED)
         application_id      INT,
         event_type          STRING,
         verb                STRING,
         session_id          STRING,
         user_id             STRING,
         
-        -- Metrics (TYPED)
         amount              DECIMAL(10,2),
         sensor_reading      DOUBLE,
         
-        -- Timestamps (TYPED)
         event_timestamp     TIMESTAMP,
         publish_time        TIMESTAMP,
         ingestion_ts        BIGINT,
         
-        -- Audit
         first_seen_ts       TIMESTAMP,
         last_updated_ts     TIMESTAMP,
         _schema_version     STRING
