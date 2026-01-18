@@ -376,7 +376,10 @@ resource "aws_iam_role_policy" "step_functions" {
       {
         Effect = "Allow"
         Action = ["glue:StartJobRun", "glue:GetJobRun", "glue:GetJobRuns", "glue:BatchStopJobRun"]
-        Resource = aws_glue_job.unified.arn
+        Resource = [
+          aws_glue_job.unified.arn,
+          aws_glue_job.curated.arn
+        ]
       },
       {
         Effect = "Allow"
