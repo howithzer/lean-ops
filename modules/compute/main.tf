@@ -55,6 +55,11 @@ variable "dlq_arn" {
   type        = string
 }
 
+variable "dlq_url" {
+  description = "DLQ URL for draining"
+  type        = string
+}
+
 variable "error_tracker_table_arn" {
   description = "Error tracker DynamoDB table ARN"
   type        = string

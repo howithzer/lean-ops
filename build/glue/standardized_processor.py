@@ -12,6 +12,7 @@ Version: 2.1.0 (layer rename: Curated → Standardized)
 """
 
 import sys
+import json
 from datetime import datetime
 
 from awsglue.transforms import *
@@ -20,6 +21,7 @@ from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 from awsglue.job import Job
 from pyspark.sql import functions as F
+from pyspark.sql.types import BooleanType
 from pyspark.sql.window import Window
 
 # Import refactored utilities
@@ -159,6 +161,19 @@ def dedup_stage1_fifo(df):
 # MAIN PROCESSING
 # =============================================================================
 
+def is_valid_json(payload):
+    """
+    Validate if a string is valid JSON.
+    This must be defined at module level for PySpark serialization.
+    """
+    if not payload: 
+        return False
+    try:
+        json.loads(payload)
+        return True
+    except:
+        return False
+
 def main():
     """Main entry point for Standardized processing."""
     logger.info("Starting Standardized processing for topic: %s", TOPIC_NAME)
@@ -184,9 +199,49 @@ def main():
     
     # Stage 1: FIFO dedup on message_id (remove network duplicates)
     df_deduped = dedup_stage1_fifo(raw_df)
+
+    # --- ERROR ROUTING: VALIDATE JSON ---
+    is_valid_udf = F.udf(is_valid_json, BooleanType())
+    
+    df_checked = df_deduped.withColumn("is_valid_json", is_valid_udf(F.col("json_payload")))
+    
+    # Split valid/invalid
+    df_valid = df_checked.filter(F.col("is_valid_json") == True).drop("is_valid_json")
+    df_invalid = df_checked.filter(F.col("is_valid_json") == False)
+    
+    # Write invalid to parse_errors
+    if df_invalid.count() > 0:
+        logger.warn("Found %d invalid records. Routing to parse_errors.", df_invalid.count())
+        
+        # Prepare error table schema
+        # DDL: raw_payload STRING, error_type STRING, error_message STRING, processed_ts TIMESTAMP
+        error_df = df_invalid.select(
+            F.col("json_payload").alias("raw_payload"),
+            F.lit("INVALID_JSON").alias("error_type"),
+            F.lit("JSON decoding failed").alias("error_message"),
+            F.current_timestamp().alias("processed_ts")
+        )
+        
+        # Write to parse_errors (Append)
+        # Note: We use glue_catalog prefix
+        PARSE_ERRORS_TABLE = f"glue_catalog.{STANDARDIZED_DATABASE}.parse_errors"
+        try:
+            # Check if table exists (or just try writeTo) - Assuming logic in DDL setup
+            # We use writeTo().append() for Iceberg
+            error_df.writeTo(PARSE_ERRORS_TABLE).append()
+            logger.info("Successfully wrote invalid records to %s", PARSE_ERRORS_TABLE)
+        except Exception as e:
+            logger.error("Failed to write to parse_errors: %s", e)
+            
+    # Proceed with valid records
+    if df_valid.count() == 0:
+        logger.info("No valid records to process after validation")
+        update_checkpoint(TOPIC_NAME, max_ingestion_ts)
+        job.commit()
+        return
     
     # Flatten JSON payload to STRING columns (deep flatten up to 5 levels)
-    df_flattened = flatten_json_payload(df_deduped)
+    df_flattened = flatten_json_payload(df_valid)
     logger.info("Columns after flattening: %s", df_flattened.columns)
     
     # SCHEMA EVOLUTION Step 1: Safe cast all columns to STRING

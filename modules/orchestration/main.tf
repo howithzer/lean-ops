@@ -126,6 +126,10 @@ resource "aws_glue_job" "unified" {
   number_of_workers = 2
   worker_type       = "G.1X"
   timeout           = 60
+  
+  execution_property {
+    max_concurrent_runs = 3
+  }
 
   tags = local.common_tags
 }
@@ -158,6 +162,10 @@ resource "aws_glue_job" "curated" {
   number_of_workers = 2
   worker_type       = "G.1X"
   timeout           = 60
+
+  execution_property {
+    max_concurrent_runs = 3
+  }
 
   tags = local.common_tags
 }
