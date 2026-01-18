@@ -296,6 +296,274 @@ resource "null_resource" "create_standardized_table" {
   depends_on = [aws_glue_catalog_database.standardized]
 }
 
+# Standardized parse_errors table for error handling
+resource "null_resource" "create_standardized_parse_errors" {
+  triggers = {
+    database = aws_glue_catalog_database.standardized.name
+    bucket   = var.iceberg_bucket
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    command     = <<-EOT
+      set -e
+      
+      echo "Creating Standardized parse_errors table via Athena DDL..."
+      
+      DDL="CREATE TABLE IF NOT EXISTS iceberg_standardized_db.parse_errors (
+        message_id        STRING,
+        idempotency_key   STRING,
+        raw_payload       STRING COMMENT 'Original json_payload for debugging',
+        error_type        STRING COMMENT 'PARSE_ERROR, FLATTEN_ERROR',
+        error_message     STRING,
+        ingestion_ts      BIGINT,
+        processed_ts      TIMESTAMP
+      )
+      PARTITIONED BY (days(processed_ts))
+      LOCATION 's3://${var.iceberg_bucket}/iceberg_standardized_db/parse_errors/'
+      TBLPROPERTIES (
+        'table_type' = 'ICEBERG',
+        'format' = 'parquet',
+        'write.format.default' = 'parquet',
+        'format-version' = '2'
+      )"
+      
+      QUERY_ID=$(aws athena start-query-execution \
+        --query-string "$DDL" \
+        --work-group "primary" \
+        --result-configuration "OutputLocation=s3://${var.iceberg_bucket}/athena-results/" \
+        --query "QueryExecutionId" \
+        --output text)
+      
+      for i in {1..12}; do
+        STATUS=$(aws athena get-query-execution \
+          --query-execution-id "$QUERY_ID" \
+          --query "QueryExecution.Status.State" \
+          --output text)
+        
+        if [ "$STATUS" = "SUCCEEDED" ]; then
+          echo "parse_errors table created successfully!"
+          exit 0
+        elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "CANCELLED" ]; then
+          echo "Query failed"
+          exit 1
+        fi
+        sleep 5
+      done
+      exit 1
+    EOT
+  }
+
+  depends_on = [aws_glue_catalog_database.standardized]
+}
+
+# =============================================================================
+# CURATED LAYER - Database and Tables
+# =============================================================================
+
+resource "aws_glue_catalog_database" "curated" {
+  name        = "iceberg_curated_db"
+  description = "Curated layer database for ${var.project_name} - typed, governed, validated"
+}
+
+# Curated events table (typed columns)
+resource "null_resource" "create_curated_events" {
+  triggers = {
+    database = aws_glue_catalog_database.curated.name
+    bucket   = var.iceberg_bucket
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    command     = <<-EOT
+      set -e
+      
+      echo "Creating Curated events table via Athena DDL..."
+      
+      DDL="CREATE TABLE IF NOT EXISTS iceberg_curated_db.events (
+        -- Identifiers
+        message_id          STRING,
+        idempotency_key     STRING,
+        
+        -- Event Details (TYPED)
+        application_id      INT,
+        event_type          STRING,
+        verb                STRING,
+        session_id          STRING,
+        user_id             STRING,
+        
+        -- Metrics (TYPED)
+        amount              DECIMAL(10,2),
+        sensor_reading      DOUBLE,
+        
+        -- Timestamps (TYPED)
+        event_timestamp     TIMESTAMP,
+        publish_time        TIMESTAMP,
+        ingestion_ts        BIGINT,
+        
+        -- Audit
+        first_seen_ts       TIMESTAMP,
+        last_updated_ts     TIMESTAMP,
+        _schema_version     STRING
+      )
+      PARTITIONED BY (days(event_timestamp))
+      LOCATION 's3://${var.iceberg_bucket}/iceberg_curated_db/events/'
+      TBLPROPERTIES (
+        'table_type' = 'ICEBERG',
+        'format' = 'parquet',
+        'write.format.default' = 'parquet',
+        'format-version' = '2'
+      )"
+      
+      QUERY_ID=$(aws athena start-query-execution \
+        --query-string "$DDL" \
+        --work-group "primary" \
+        --result-configuration "OutputLocation=s3://${var.iceberg_bucket}/athena-results/" \
+        --query "QueryExecutionId" \
+        --output text)
+      
+      for i in {1..12}; do
+        STATUS=$(aws athena get-query-execution \
+          --query-execution-id "$QUERY_ID" \
+          --query "QueryExecution.Status.State" \
+          --output text)
+        
+        if [ "$STATUS" = "SUCCEEDED" ]; then
+          echo "Curated events table created successfully!"
+          exit 0
+        elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "CANCELLED" ]; then
+          echo "Query failed"
+          exit 1
+        fi
+        sleep 5
+      done
+      exit 1
+    EOT
+  }
+
+  depends_on = [aws_glue_catalog_database.curated]
+}
+
+# Curated errors table (CDE violations, type failures)
+resource "null_resource" "create_curated_errors" {
+  triggers = {
+    database = aws_glue_catalog_database.curated.name
+    bucket   = var.iceberg_bucket
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    command     = <<-EOT
+      set -e
+      
+      echo "Creating Curated errors table via Athena DDL..."
+      
+      DDL="CREATE TABLE IF NOT EXISTS iceberg_curated_db.errors (
+        message_id        STRING,
+        idempotency_key   STRING,
+        raw_record        STRING COMMENT 'Serialized source record',
+        error_type        STRING COMMENT 'CDE_VIOLATION, TYPE_CAST_ERROR, ENUM_INVALID',
+        error_field       STRING COMMENT 'Which field failed validation',
+        error_message     STRING,
+        processed_ts      TIMESTAMP
+      )
+      PARTITIONED BY (days(processed_ts))
+      LOCATION 's3://${var.iceberg_bucket}/iceberg_curated_db/errors/'
+      TBLPROPERTIES (
+        'table_type' = 'ICEBERG',
+        'format' = 'parquet',
+        'format-version' = '2'
+      )"
+      
+      QUERY_ID=$(aws athena start-query-execution \
+        --query-string "$DDL" \
+        --work-group "primary" \
+        --result-configuration "OutputLocation=s3://${var.iceberg_bucket}/athena-results/" \
+        --query "QueryExecutionId" \
+        --output text)
+      
+      for i in {1..12}; do
+        STATUS=$(aws athena get-query-execution \
+          --query-execution-id "$QUERY_ID" \
+          --query "QueryExecution.Status.State" \
+          --output text)
+        
+        if [ "$STATUS" = "SUCCEEDED" ]; then
+          echo "Curated errors table created successfully!"
+          exit 0
+        elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "CANCELLED" ]; then
+          echo "Query failed"
+          exit 1
+        fi
+        sleep 5
+      done
+      exit 1
+    EOT
+  }
+
+  depends_on = [aws_glue_catalog_database.curated]
+}
+
+# Curated drift_log table (schema changes tracking)
+resource "null_resource" "create_curated_drift_log" {
+  triggers = {
+    database = aws_glue_catalog_database.curated.name
+    bucket   = var.iceberg_bucket
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    command     = <<-EOT
+      set -e
+      
+      echo "Creating Curated drift_log table via Athena DDL..."
+      
+      DDL="CREATE TABLE IF NOT EXISTS iceberg_curated_db.drift_log (
+        detected_ts       TIMESTAMP,
+        column_name       STRING,
+        action            STRING COMMENT 'ADDED, REMOVED, TYPE_CHANGED',
+        source_layer      STRING COMMENT 'standardized, curated',
+        old_value         STRING,
+        new_value         STRING,
+        details           STRING
+      )
+      PARTITIONED BY (days(detected_ts))
+      LOCATION 's3://${var.iceberg_bucket}/iceberg_curated_db/drift_log/'
+      TBLPROPERTIES (
+        'table_type' = 'ICEBERG',
+        'format' = 'parquet',
+        'format-version' = '2'
+      )"
+      
+      QUERY_ID=$(aws athena start-query-execution \
+        --query-string "$DDL" \
+        --work-group "primary" \
+        --result-configuration "OutputLocation=s3://${var.iceberg_bucket}/athena-results/" \
+        --query "QueryExecutionId" \
+        --output text)
+      
+      for i in {1..12}; do
+        STATUS=$(aws athena get-query-execution \
+          --query-execution-id "$QUERY_ID" \
+          --query "QueryExecution.Status.State" \
+          --output text)
+        
+        if [ "$STATUS" = "SUCCEEDED" ]; then
+          echo "drift_log table created successfully!"
+          exit 0
+        elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "CANCELLED" ]; then
+          echo "Query failed"
+          exit 1
+        fi
+        sleep 5
+      done
+      exit 1
+    EOT
+  }
+
+  depends_on = [aws_glue_catalog_database.curated]
+}
+
 # =============================================================================
 # OUTPUTS
 # =============================================================================
@@ -308,6 +576,11 @@ output "database_name" {
 output "standardized_database_name" {
   description = "Standardized Glue database name"
   value       = aws_glue_catalog_database.standardized.name
+}
+
+output "curated_database_name" {
+  description = "Curated Glue database name"
+  value       = aws_glue_catalog_database.curated.name
 }
 
 output "default_table_created" {
@@ -325,3 +598,11 @@ output "standardized_table_created" {
   value       = null_resource.create_standardized_table.id
 }
 
+output "curated_tables_created" {
+  description = "Indicates Curated tables were created"
+  value = {
+    events    = null_resource.create_curated_events.id
+    errors    = null_resource.create_curated_errors.id
+    drift_log = null_resource.create_curated_drift_log.id
+  }
+}

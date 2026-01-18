@@ -38,8 +38,9 @@ mkdir -p "$BUILD_DIR"
 # =============================================================================
 # Copy main script
 # =============================================================================
-log_info "Copying main script..."
+log_info "Copying main scripts..."
 cp "$GLUE_DIR/standardized_processor.py" "$BUILD_DIR/"
+cp "$GLUE_DIR/curated_processor.py" "$BUILD_DIR/"
 
 # =============================================================================
 # Create glue_libs.zip with utils package
@@ -68,10 +69,12 @@ if [[ "${1:-}" == "--upload" ]]; then
     log_info "Uploading to s3://$BUCKET/glue-scripts/..."
     
     AWS_PROFILE="${AWS_PROFILE:-terraform-firehose}" aws s3 cp "$BUILD_DIR/standardized_processor.py" "s3://$BUCKET/glue-scripts/standardized_processor.py"
+    AWS_PROFILE="${AWS_PROFILE:-terraform-firehose}" aws s3 cp "$BUILD_DIR/curated_processor.py" "s3://$BUCKET/glue-scripts/curated_processor.py"
     AWS_PROFILE="${AWS_PROFILE:-terraform-firehose}" aws s3 cp "$BUILD_DIR/glue_libs.zip" "s3://$BUCKET/glue-scripts/glue_libs.zip"
     
     log_info "Upload complete!"
     log_info "  - s3://$BUCKET/glue-scripts/standardized_processor.py"
+    log_info "  - s3://$BUCKET/glue-scripts/curated_processor.py"
     log_info "  - s3://$BUCKET/glue-scripts/glue_libs.zip"
 fi
 

@@ -130,6 +130,38 @@ resource "aws_glue_job" "unified" {
   tags = local.common_tags
 }
 
+# Curated Layer Glue Job
+resource "aws_glue_job" "curated" {
+  name     = "${local.name_prefix}-curated-job"
+  role_arn = var.glue_role_arn
+
+  command {
+    name            = "glueetl"
+    script_location = "s3://${var.iceberg_bucket}/glue-scripts/curated_processor.py"
+    python_version  = "3"
+  }
+
+  default_arguments = {
+    "--job-language"                     = "python"
+    "--job-bookmark-option"              = "job-bookmark-disable"
+    "--enable-metrics"                   = "true"
+    "--enable-continuous-cloudwatch-log" = "true"
+    "--enable-spark-ui"                  = "true"
+    "--spark-event-logs-path"            = "s3://${var.iceberg_bucket}/glue-temp/spark-logs/"
+    "--TempDir"                          = "s3://${var.iceberg_bucket}/glue-temp/"
+    "--datalake-formats"                 = "iceberg"
+    "--extra-py-files"                   = "s3://${var.iceberg_bucket}/glue-scripts/glue_libs.zip"
+    "--conf"                             = "spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions --conf spark.sql.iceberg.handle-timestamp-without-timezone=true"
+  }
+
+  glue_version      = "4.0"
+  number_of_workers = 2
+  worker_type       = "G.1X"
+  timeout           = 60
+
+  tags = local.common_tags
+}
+
 # =============================================================================
 # STEP FUNCTIONS
 # =============================================================================
@@ -243,18 +275,66 @@ resource "aws_sfn_state_machine" "unified_orchestrator" {
           Next        = "HandleError"
         }]
       }
-      # Step 5: Check if Curated (typed/governed) processing is ready
+      # Step 5: Check if Curated schema exists
       CheckCuratedReady = {
-        Type   = "Pass"
-        Result = { curated_ready = false }
-        ResultPath = "$.curatedCheck"
-        Comment = "Placeholder - Curated layer not yet implemented"
-        Next    = "SuccessStandardizedOnly"
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = var.check_schema_lambda_arn
+          Payload = {
+            "topic_name.$" = "$.topic_name"
+            schema_key     = "schemas/curated_schema.json"
+          }
+        }
+        ResultPath = "$.curatedSchemaCheck"
+        Next       = "CuratedSchemaChoice"
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          ResultPath  = "$.error"
+          Next        = "SuccessStandardizedOnly"
+        }]
+      }
+      # Step 6: Choice - if curated schema exists, run Curated job
+      CuratedSchemaChoice = {
+        Type = "Choice"
+        Choices = [{
+          Variable      = "$.curatedSchemaCheck.Payload.schema_exists"
+          BooleanEquals = true
+          Next          = "RunCurated"
+        }]
+        Default = "SuccessStandardizedOnly"
+      }
+      # Step 7: Run Curated Glue Job
+      RunCurated = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::glue:startJobRun.sync"
+        Parameters = {
+          JobName   = aws_glue_job.curated.name
+          Arguments = {
+            "--topic_name.$"           = "$.topic_name"
+            "--standardized_database"  = "iceberg_standardized_db"
+            "--curated_database"       = "iceberg_curated_db"
+            "--checkpoint_table"       = var.checkpoint_table_name
+            "--iceberg_bucket"         = var.iceberg_bucket
+            "--schema_bucket"          = var.iceberg_bucket
+          }
+        }
+        ResultPath = "$.curatedJobResult"
+        Next       = "SuccessFull"
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          ResultPath  = "$.error"
+          Next        = "HandleError"
+        }]
       }
       # Success states
       SuccessStandardizedOnly = {
         Type    = "Succeed"
-        Comment = "Standardized succeeded, Curated not yet implemented"
+        Comment = "Standardized succeeded, Curated skipped (no schema)"
+      }
+      SuccessFull = {
+        Type    = "Succeed"
+        Comment = "Full pipeline success - Standardized and Curated complete"
       }
       # Error handling
       HandleError = {

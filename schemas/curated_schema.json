@@ -1,0 +1,126 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "Curated Events Schema",
+    "description": "Schema for curated layer - typed, governed, validated columns",
+    "columns": {
+        "message_id": {
+            "type": "STRING",
+            "cde": false,
+            "required": false,
+            "nullable": true,
+            "source": "passthrough"
+        },
+        "idempotency_key": {
+            "type": "STRING",
+            "cde": true,
+            "required": true,
+            "nullable": false,
+            "description": "Business deduplication key"
+        },
+        "application_id": {
+            "type": "INT",
+            "cde": false,
+            "required": false,
+            "nullable": true,
+            "default": -1,
+            "json_path": "$.applicationId"
+        },
+        "event_type": {
+            "type": "STRING",
+            "cde": false,
+            "required": false,
+            "nullable": true,
+            "default": "UNKNOWN",
+            "enum": [
+                "Login",
+                "Logout",
+                "Click",
+                "Purchase",
+                "PageView",
+                "UNKNOWN"
+            ]
+        },
+        "verb": {
+            "type": "STRING",
+            "cde": false,
+            "required": false,
+            "nullable": true
+        },
+        "session_id": {
+            "type": "STRING",
+            "cde": false,
+            "required": false,
+            "nullable": true,
+            "json_path": "$.sessionId"
+        },
+        "user_id": {
+            "type": "STRING",
+            "cde": false,
+            "required": false,
+            "nullable": true,
+            "json_path": "$.userId"
+        },
+        "amount": {
+            "type": "DECIMAL(10,2)",
+            "cde": false,
+            "required": false,
+            "nullable": true,
+            "default": 0.0
+        },
+        "sensor_reading": {
+            "type": "DOUBLE",
+            "cde": false,
+            "required": false,
+            "nullable": true
+        },
+        "event_timestamp": {
+            "type": "TIMESTAMP",
+            "cde": true,
+            "required": true,
+            "nullable": false,
+            "json_path": "$.eventTimestamp",
+            "description": "When the event occurred at the source"
+        },
+        "publish_time": {
+            "type": "TIMESTAMP",
+            "cde": false,
+            "required": false,
+            "nullable": true,
+            "source": "passthrough"
+        },
+        "ingestion_ts": {
+            "type": "BIGINT",
+            "cde": false,
+            "required": false,
+            "nullable": true,
+            "source": "passthrough"
+        }
+    },
+    "passthrough_columns": [
+        "message_id",
+        "publish_time",
+        "ingestion_ts"
+    ],
+    "audit_columns": {
+        "first_seen_ts": {
+            "type": "TIMESTAMP",
+            "description": "When record first appeared in Curated"
+        },
+        "last_updated_ts": {
+            "type": "TIMESTAMP",
+            "description": "When record was last updated"
+        },
+        "_schema_version": {
+            "type": "STRING",
+            "default": "1.0.0"
+        }
+    },
+    "cde_validation": {
+        "fail_on_missing_cde": true,
+        "route_errors_to_table": "iceberg_curated_db.errors"
+    },
+    "merge_config": {
+        "key_column": "idempotency_key",
+        "update_condition": "source.last_updated_ts > target.last_updated_ts"
+    }
+}
