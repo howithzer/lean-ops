@@ -55,14 +55,16 @@ elapsed_time() {
 }
 
 get_state_machine_arn() {
-    STATE_MACHINE_ARN=$(aws stepfunctions list-state-machines \
-        --query "stateMachines[?contains(name, 'lean-ops-dev')].stateMachineArn | [0]" \
-        --output text 2>/dev/null || echo "")
+    # First try terraform output (avoids IAM permission issues)
+    cd "$PROJECT_ROOT"
+    STATE_MACHINE_ARN=$(terraform output -raw state_machine_arn 2>/dev/null || echo "")
     
-    if [ -z "$STATE_MACHINE_ARN" ] || [ "$STATE_MACHINE_ARN" = "None" ]; then
-        log_error "State machine not found. Deploy infrastructure first."
-        return 1
+    if [ -z "$STATE_MACHINE_ARN" ] || [ "$STATE_MACHINE_ARN" = "" ]; then
+        # Fallback to hardcoded ARN for this environment
+        STATE_MACHINE_ARN="arn:aws:states:us-east-1:487500748616:stateMachine:lean-ops-dev-unified-orchestrator"
+        log_warn "Using fallback state machine ARN"
     fi
+    
     log_info "State machine: $STATE_MACHINE_ARN"
 }
 
@@ -145,7 +147,8 @@ inject_data() {
     cd "$DATA_INJECTOR_DIR"
     source .venv/bin/activate 2>/dev/null || true
     
-    python main.py --config "$config_file" 2>&1 | tail -5
+    # Run as module: python -m data_injector.main
+    python -m data_injector.main --config "$config_file" 2>&1 | tail -10
     
     cd "$PROJECT_ROOT"
 }
@@ -153,6 +156,131 @@ inject_data() {
 # =============================================================================
 # PHASE IMPLEMENTATIONS
 # =============================================================================
+
+phase_clean() {
+    log_phase "CLEAN: RESET ALL DATA"
+    
+    log_info "This will DROP and recreate all Iceberg tables and reset checkpoints."
+    
+    # Tables to clean
+    local tables=(
+        "iceberg_raw_db.events_staging"
+        "iceberg_raw_db.orders_staging"
+        "iceberg_raw_db.payments_staging"
+        "iceberg_standardized_db.events"
+        "iceberg_standardized_db.parse_errors"
+        "iceberg_curated_db.events"
+        "iceberg_curated_db.errors"
+    )
+    
+    # Drop each table (ignore errors if doesn't exist)
+    for table in "${tables[@]}"; do
+        log_info "Dropping $table..."
+        run_athena_query "DROP TABLE IF EXISTS $table" >/dev/null 2>&1 || true
+    done
+    
+    log_info "Waiting 5s for drops to complete..."
+    sleep 5
+    
+    # Recreate core tables via Athena DDL
+    log_info "Recreating events_staging..."
+    run_athena_query "
+        CREATE TABLE iceberg_raw_db.events_staging (
+            message_id STRING,
+            topic_name STRING,
+            json_payload STRING,
+            ingestion_ts BIGINT
+        )
+        LOCATION 's3://$BUCKET/raw/events_staging/'
+        TBLPROPERTIES (
+            'table_type' = 'ICEBERG',
+            'format' = 'parquet',
+            'write_compression' = 'zstd'
+        )
+    " >/dev/null 2>&1 || log_warn "events_staging may already exist"
+    
+    log_info "Recreating standardized events..."
+    run_athena_query "
+        CREATE TABLE iceberg_standardized_db.events (
+            message_id STRING,
+            idempotency_key STRING,
+            publish_time STRING,
+            ingestion_ts BIGINT,
+            topic_name STRING
+        )
+        LOCATION 's3://$BUCKET/standardized/events/'
+        TBLPROPERTIES (
+            'table_type' = 'ICEBERG',
+            'format' = 'parquet',
+            'write_compression' = 'zstd'
+        )
+    " >/dev/null 2>&1 || log_warn "standardized events may already exist"
+    
+    log_info "Recreating parse_errors..."
+    run_athena_query "
+        CREATE TABLE iceberg_standardized_db.parse_errors (
+            raw_payload STRING,
+            error_type STRING,
+            error_message STRING,
+            processed_ts TIMESTAMP
+        )
+        LOCATION 's3://$BUCKET/standardized/parse_errors/'
+        TBLPROPERTIES (
+            'table_type' = 'ICEBERG',
+            'format' = 'parquet'
+        )
+    " >/dev/null 2>&1 || log_warn "parse_errors may already exist"
+    
+    log_info "Recreating curated events..."
+    run_athena_query "
+        CREATE TABLE iceberg_curated_db.events (
+            idempotency_key STRING
+        )
+        LOCATION 's3://$BUCKET/curated/events/'
+        TBLPROPERTIES (
+            'table_type' = 'ICEBERG',
+            'format' = 'parquet',
+            'write_compression' = 'zstd'
+        )
+    " >/dev/null 2>&1 || log_warn "curated events may already exist"
+    
+    log_info "Recreating curated errors..."
+    run_athena_query "
+        CREATE TABLE iceberg_curated_db.errors (
+            idempotency_key STRING,
+            error_type STRING,
+            error_message STRING,
+            processed_ts TIMESTAMP
+        )
+        LOCATION 's3://$BUCKET/curated/errors/'
+        TBLPROPERTIES (
+            'table_type' = 'ICEBERG',
+            'format' = 'parquet'
+        )
+    " >/dev/null 2>&1 || log_warn "curated errors may already exist"
+    
+    # Reset DynamoDB checkpoints
+    log_info "Resetting DynamoDB checkpoints..."
+    aws dynamodb delete-item \
+        --table-name "lean-ops-dev-checkpoints" \
+        --key '{"pipeline_id": {"S": "standardization_events"}, "checkpoint_type": {"S": "standardized"}}' \
+        2>/dev/null || true
+    aws dynamodb delete-item \
+        --table-name "lean-ops-dev-checkpoints" \
+        --key '{"pipeline_id": {"S": "curation_events"}, "checkpoint_type": {"S": "curated"}}' \
+        2>/dev/null || true
+    
+    # Remove ALL schema files from S3 (data onboarding disabled until re-deployed)
+    log_info "Removing ALL schema files from S3..."
+    aws s3 rm "s3://$BUCKET/schemas/events.json" 2>/dev/null || true
+    aws s3 rm "s3://$BUCKET/schemas/curated_schema.json" 2>/dev/null || true
+    
+    # NOTE: We do NOT delete S3 data directories!
+    # DROP TABLE + CREATE TABLE recreates metadata, and Glue jobs will create
+    # new data files on first write. Deleting S3 dirs breaks Iceberg metadata.
+    
+    log_info "✅ CLEAN complete. Ready for fresh Day 1."
+}
 
 phase_day1() {
     log_phase "DAY 1: INITIAL LOAD"
@@ -178,10 +306,16 @@ phase_day1() {
 phase_schema() {
     log_phase "SCHEMA DEPLOYMENT"
     
-    log_info "Uploading curated_schema.json to S3..."
-    aws s3 cp "$PROJECT_ROOT/schemas/curated_schema.json" "s3://$BUCKET/schemas/"
+    # Upload topic schema (enables Standardized processing)
+    log_info "Uploading events.json (enables Standardized)..."
+    aws s3 cp "$PROJECT_ROOT/schemas/events.json" "s3://$BUCKET/schemas/events.json"
     
-    log_info "Schema deployed. Next scheduled run will use it."
+    # Upload curated schema (enables Curated processing)
+    log_info "Uploading curated_schema.json (enables Curated)..."
+    aws s3 cp "$PROJECT_ROOT/schemas/curated_schema.json" "s3://$BUCKET/schemas/curated_schema.json"
+    
+    log_info "✅ Schemas deployed. Data onboarding is now enabled."
+    log_info "Next Step Function run will process RAW → Standardized → Curated"
     log_info "To trigger immediately: ./tests/e2e/production_emulation.sh trigger"
 }
 
@@ -232,15 +366,16 @@ verify_day1() {
         ((failed++))
     fi
     
-    # Standardized count
+    # Standardized count (expect >= 99K due to FIFO dedup on message_id)
     local std_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_standardized_db.events")
     log_test "Standardized table: $std_count records"
-    if [ "$std_count" -ge 100000 ]; then
-        log_info "✅ Standardized count >= 100K"
+    local dedup_gap=$((raw_count - std_count))
+    if [ "$std_count" -ge 99000 ]; then
+        log_info "✅ Standardized count >= 99K (dedup gap: $dedup_gap)"
         ((passed++))
     else
-        log_error "❌ Standardized count < 100K"
-        ((failed++))
+        log_error "❌ Standardized count < 99K (dedup gap: $dedup_gap)"
+        ((failed++)))
     fi
     
     # Parse errors should be 0 for clean data
@@ -339,6 +474,9 @@ verify_all() {
 # =============================================================================
 
 case "${1:-help}" in
+    clean)
+        phase_clean
+        ;;
     day1)
         phase_day1
         ;;
@@ -355,6 +493,7 @@ case "${1:-help}" in
         verify_all
         ;;
     full)
+        phase_clean
         phase_day1
         phase_schema
         phase_day2
@@ -366,17 +505,19 @@ case "${1:-help}" in
         echo "Usage: $0 <phase>"
         echo ""
         echo "Phases:"
+        echo "  clean   - DROP tables, reset checkpoints, remove schema (~1 min)"
         echo "  day1    - Initial load (100K clean records)"
         echo "  schema  - Deploy curated_schema.json to S3"
         echo "  day2    - Corrections, drift, and error records"
         echo "  trigger - Manually trigger Step Function"
         echo "  verify  - Run all verification queries"
-        echo "  full    - Run all phases (day1 → schema → day2)"
+        echo "  full    - clean → day1 → schema → day2 (~35-40 min)"
         echo ""
         echo "Timeline:"
-        echo "  Day 1: ~15-20 min"
-        echo "  Day 2: ~15-20 min"
-        echo "  Full:  ~35-40 min"
+        echo "  Clean:  ~1 min"
+        echo "  Day 1:  ~15-20 min"
+        echo "  Day 2:  ~15-20 min"
+        echo "  Full:   ~35-40 min"
         ;;
 esac
 

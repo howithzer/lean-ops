@@ -222,11 +222,12 @@ deploy_infrastructure() {
     log_info "Uploading Glue artifacts to S3..."
     ./scripts/build_glue.sh --upload
     
-    # Upload schema
-    log_info "Uploading schema..."
-    aws s3 cp schemas/events.json "s3://$BUCKET/schemas/events.json"
+    # NOTE: Schema files are NOT uploaded during deploy.
+    # Schema = data onboarding config, separate from infrastructure.
+    # Use: ./tests/e2e/production_emulation.sh schema
     
     log_info "Infrastructure deployed successfully"
+    log_info "To enable data processing, deploy schema: ./tests/e2e/production_emulation.sh schema"
 }
 
 destroy_infrastructure() {
