@@ -241,6 +241,49 @@ def write_errors(errors_df):
     logger.info("Wrote %d error records to %s", error_count, ERRORS_TABLE)
 
 
+def add_missing_columns_to_curated(df):
+    """
+    Add missing columns from DataFrame to the Curated Iceberg table.
+    
+    This enables schema evolution for MERGE - if the source DataFrame has
+    columns that don't exist in the target table, we add them first.
+    
+    Args:
+        df: Source DataFrame with potentially new columns
+    """
+    try:
+        # Get existing columns from target table
+        target_df = spark.table(CURATED_TABLE).limit(0)  # Just schema, no data
+        target_cols = set(c.lower() for c in target_df.columns)
+        source_cols = set(c.lower() for c in df.columns)
+        
+        # Find new columns
+        new_cols = source_cols - target_cols
+        
+        if not new_cols:
+            logger.info("No schema evolution needed - all columns exist in target")
+            return
+        
+        logger.info("Schema evolution: adding %d new columns: %s", len(new_cols), sorted(new_cols))
+        
+        # Add each new column (Iceberg supports ALTER TABLE ADD COLUMN)
+        for col in sorted(new_cols):
+            # All columns from Standardized are STRING
+            alter_sql = f"ALTER TABLE {CURATED_TABLE} ADD COLUMN {col} STRING"
+            try:
+                spark.sql(alter_sql)
+                logger.info("Added column: %s", col)
+            except Exception as e:
+                # Column might already exist (race condition) - that's OK
+                if "already exists" in str(e).lower():
+                    logger.info("Column %s already exists", col)
+                else:
+                    logger.warning("Failed to add column %s: %s", col, e)
+    
+    except Exception as e:
+        logger.warning("Schema evolution check failed (table may not exist): %s", e)
+
+
 def write_to_curated(df, is_first_run: bool):
     """Write valid records to Curated table using MERGE."""
     if df.count() == 0:
@@ -252,6 +295,9 @@ def write_to_curated(df, is_first_run: bool):
         df.writeTo(CURATED_TABLE).using("iceberg").createOrReplace()
         logger.info("Initial data loaded successfully")
     else:
+        # Schema evolution: add any new columns before MERGE
+        add_missing_columns_to_curated(df)
+        
         # MERGE for subsequent runs
         df.createOrReplaceTempView("staged_data")
         

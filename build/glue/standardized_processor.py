@@ -21,7 +21,6 @@ from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 from awsglue.job import Job
 from pyspark.sql import functions as F
-from pyspark.sql.types import BooleanType
 from pyspark.sql.window import Window
 
 # Import refactored utilities
@@ -161,18 +160,6 @@ def dedup_stage1_fifo(df):
 # MAIN PROCESSING
 # =============================================================================
 
-def is_valid_json(payload):
-    """
-    Validate if a string is valid JSON.
-    This must be defined at module level for PySpark serialization.
-    """
-    if not payload: 
-        return False
-    try:
-        json.loads(payload)
-        return True
-    except:
-        return False
 
 def main():
     """Main entry point for Standardized processing."""
@@ -200,10 +187,30 @@ def main():
     # Stage 1: FIFO dedup on message_id (remove network duplicates)
     df_deduped = dedup_stage1_fifo(raw_df)
 
-    # --- ERROR ROUTING: VALIDATE JSON ---
-    is_valid_udf = F.udf(is_valid_json, BooleanType())
-    
-    df_checked = df_deduped.withColumn("is_valid_json", is_valid_udf(F.col("json_payload")))
+    # --- ERROR ROUTING: VALIDATE JSON (Native Spark SQL - no UDF!) ---
+    # This approach avoids Python UDF serialization issues that cause
+    # "Cannot generate code for expression" errors in Spark's Tungsten codegen.
+    # 
+    # Valid JSON detection logic:
+    # 1. Not null
+    # 2. Not empty/whitespace
+    # 3. Starts with '{' or '[' (object or array)
+    # 4. Ends with '}' or ']' (matching close)
+    df_checked = df_deduped.withColumn(
+        "_trimmed_payload",
+        F.trim(F.col("json_payload"))
+    ).withColumn(
+        "is_valid_json",
+        F.when(
+            (F.col("json_payload").isNotNull()) &
+            (F.col("_trimmed_payload") != "") &
+            (
+                (F.col("_trimmed_payload").startswith("{") & F.col("_trimmed_payload").endswith("}")) |
+                (F.col("_trimmed_payload").startswith("[") & F.col("_trimmed_payload").endswith("]"))
+            ),
+            F.lit(True)
+        ).otherwise(F.lit(False))
+    ).drop("_trimmed_payload")
     
     # Split valid/invalid
     df_valid = df_checked.filter(F.col("is_valid_json") == True).drop("is_valid_json")
