@@ -448,6 +448,9 @@ run_e2e_tests() {
     
     raw_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_raw_db.events_staging")
     standardized_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_standardized_db.events")
+    # Always query Curated counts in Final Verification (don't rely on skipped test variables)
+    curated_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_curated_db.events" 2>/dev/null || echo "0")
+    curated_errors=$(run_athena_query "SELECT COUNT(*) FROM iceberg_curated_db.errors" 2>/dev/null || echo "0")
     
     log_info "RAW table: $raw_count records"
     log_info "Standardized table: $standardized_count records"
