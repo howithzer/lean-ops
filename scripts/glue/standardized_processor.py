@@ -162,7 +162,7 @@ def dedup_stage1_fifo(df):
 
 
 def main():
-    \"\"\"
+    """
     Main entry point for Standardized processing.
     
     Stages:
@@ -173,119 +173,119 @@ def main():
         5. EVOLVE: Schema evolution
         6. WRITE: MERGE to Standardized table
         7. CHECKPOINT: Update DynamoDB
-    \"\"\"
-    current_stage = \"INIT\"
+    """
+    current_stage = "INIT"
     records_in = 0
     records_valid = 0
     records_error = 0
     records_written = 0
     
     try:
-        logger.info(\"Starting Standardized processing for topic: %s\", TOPIC_NAME)
+        logger.info("Starting Standardized processing for topic: %s", TOPIC_NAME)
         
         # === STAGE 1: INIT ===
-        current_stage = \"INIT\"
+        current_stage = "INIT"
         last_checkpoint = get_last_checkpoint(TOPIC_NAME)
-        logger.info(\"Last checkpoint: %d\", last_checkpoint)
+        logger.info("Last checkpoint: %d", last_checkpoint)
         
         # === STAGE 2: READ ===
-        current_stage = \"READ\"
-        raw_df = spark.table(RAW_TABLE).filter(F.col(\"ingestion_ts\") > last_checkpoint)
+        current_stage = "READ"
+        raw_df = spark.table(RAW_TABLE).filter(F.col("ingestion_ts") > last_checkpoint)
         records_in = raw_df.count()
-        logger.info(\"Records to process: %d\", records_in)
+        logger.info("Records to process: %d", records_in)
         
         if records_in == 0:
-            logger.info(\"No new records to process - exiting gracefully\")
+            logger.info("No new records to process - exiting gracefully")
             job.commit()
             return
         
-        max_ingestion_ts = raw_df.agg(F.max(\"ingestion_ts\")).collect()[0][0]
-        logger.info(\"Max ingestion_ts: %d\", max_ingestion_ts)
+        max_ingestion_ts = raw_df.agg(F.max("ingestion_ts")).collect()[0][0]
+        logger.info("Max ingestion_ts: %d", max_ingestion_ts)
         
         # === STAGE 3: VALIDATE ===
-        current_stage = \"VALIDATE\"
+        current_stage = "VALIDATE"
         df_deduped = dedup_stage1_fifo(raw_df)
         
         # JSON validation using native Spark SQL
         df_checked = df_deduped.withColumn(
-            \"_trimmed_payload\",
-            F.trim(F.col(\"json_payload\"))
+            "_trimmed_payload",
+            F.trim(F.col("json_payload"))
         ).withColumn(
-            \"is_valid_json\",
+            "is_valid_json",
             F.when(
-                (F.col(\"json_payload\").isNotNull()) &
-                (F.col(\"_trimmed_payload\") != \"\") &
+                (F.col("json_payload").isNotNull()) &
+                (F.col("_trimmed_payload") != "") &
                 (
-                    (F.col(\"_trimmed_payload\").startswith(\"{\") & F.col(\"_trimmed_payload\").endswith(\"}\")) |
-                    (F.col(\"_trimmed_payload\").startswith(\"[\") & F.col(\"_trimmed_payload\").endswith(\"]\"))
+                    (F.col("_trimmed_payload").startswith("{") & F.col("_trimmed_payload").endswith("}")) |
+                    (F.col("_trimmed_payload").startswith("[") & F.col("_trimmed_payload").endswith("]"))
                 ),
                 F.lit(True)
             ).otherwise(F.lit(False))
-        ).drop(\"_trimmed_payload\")
+        ).drop("_trimmed_payload")
         
-        df_valid = df_checked.filter(F.col(\"is_valid_json\") == True).drop(\"is_valid_json\")
-        df_invalid = df_checked.filter(F.col(\"is_valid_json\") == False)
+        df_valid = df_checked.filter(F.col("is_valid_json") == True).drop("is_valid_json")
+        df_invalid = df_checked.filter(F.col("is_valid_json") == False)
         records_error = df_invalid.count()
         records_valid = df_valid.count()
         
         # Route invalid records to parse_errors
         if records_error > 0:
-            logger.warn(\"Found %d invalid records. Routing to parse_errors.\", records_error)
+            logger.warn("Found %d invalid records. Routing to parse_errors.", records_error)
             error_df = df_invalid.select(
-                F.col(\"json_payload\").alias(\"raw_payload\"),
-                F.lit(\"INVALID_JSON\").alias(\"error_type\"),
-                F.lit(\"JSON validation failed\").alias(\"error_message\"),
-                F.current_timestamp().alias(\"processed_ts\")
+                F.col("json_payload").alias("raw_payload"),
+                F.lit("INVALID_JSON").alias("error_type"),
+                F.lit("JSON validation failed").alias("error_message"),
+                F.current_timestamp().alias("processed_ts")
             )
             
-            PARSE_ERRORS_TABLE = f\"glue_catalog.{STANDARDIZED_DATABASE}.parse_errors\"
+            PARSE_ERRORS_TABLE = f"glue_catalog.{STANDARDIZED_DATABASE}.parse_errors"
             try:
                 error_df.writeTo(PARSE_ERRORS_TABLE).append()
-                logger.info(\"Wrote %d invalid records to %s\", records_error, PARSE_ERRORS_TABLE)
+                logger.info("Wrote %d invalid records to %s", records_error, PARSE_ERRORS_TABLE)
             except Exception as e:
-                logger.error(\"Failed to write to parse_errors (non-fatal): %s\", e)
+                logger.error("Failed to write to parse_errors (non-fatal): %s", e)
         
         if records_valid == 0:
-            logger.info(\"No valid records after validation - updating checkpoint and exiting\")
+            logger.info("No valid records after validation - updating checkpoint and exiting")
             update_checkpoint(TOPIC_NAME, max_ingestion_ts)
             job.commit()
             return
         
         # === STAGE 4: FLATTEN ===
-        current_stage = \"FLATTEN\"
+        current_stage = "FLATTEN"
         df_flattened = flatten_json_payload(df_valid)
-        logger.info(\"Columns after flattening: %d\", len(df_flattened.columns))
+        logger.info("Columns after flattening: %d", len(df_flattened.columns))
         
         # === STAGE 5: EVOLVE ===
-        current_stage = \"EVOLVE\"
+        current_stage = "EVOLVE"
         df_flattened = safe_cast_to_string(df_flattened)
         new_cols = add_missing_columns_to_table(spark, df_flattened, STANDARDIZED_TABLE)
         if new_cols:
-            logger.info(\"Schema evolved: %d new columns added\", len(new_cols))
+            logger.info("Schema evolved: %d new columns added", len(new_cols))
         df_aligned = align_dataframe_to_table(spark, df_flattened, STANDARDIZED_TABLE)
         
         # === STAGE 6: WRITE ===
-        current_stage = \"WRITE\"
+        current_stage = "WRITE"
         is_first_run = True
         try:
-            snapshots_df = spark.sql(f\"SELECT * FROM {STANDARDIZED_TABLE}.snapshots LIMIT 1\")
+            snapshots_df = spark.sql(f"SELECT * FROM {STANDARDIZED_TABLE}.snapshots LIMIT 1")
             if snapshots_df.count() > 0:
                 is_first_run = False
         except Exception:
             pass  # First run
         
         if is_first_run:
-            logger.info(\"First run - using writeTo() for initial load\")
-            df_aligned.writeTo(STANDARDIZED_TABLE).using(\"iceberg\").createOrReplace()
+            logger.info("First run - using writeTo() for initial load")
+            df_aligned.writeTo(STANDARDIZED_TABLE).using("iceberg").createOrReplace()
             records_written = df_aligned.count()
         else:
-            df_aligned.createOrReplaceTempView(\"staged_data\")
+            df_aligned.createOrReplaceTempView("staged_data")
             columns = df_aligned.columns
-            update_clause = \", \".join([f\"t.{c} = s.{c}\" for c in columns if c != 'idempotency_key'])
-            insert_cols = \", \".join(columns)
-            insert_vals = \", \".join([f\"s.{c}\" for c in columns])
+            update_clause = ", ".join([f"t.{c} = s.{c}" for c in columns if c != 'idempotency_key'])
+            insert_cols = ", ".join(columns)
+            insert_vals = ", ".join([f"s.{c}" for c in columns])
             
-            merge_sql = f\"\"\"
+            merge_sql = f"""
             MERGE INTO {STANDARDIZED_TABLE} t
             USING staged_data s
             ON t.idempotency_key = s.idempotency_key
@@ -293,39 +293,40 @@ def main():
                 UPDATE SET {update_clause}
             WHEN NOT MATCHED THEN
                 INSERT ({insert_cols}) VALUES ({insert_vals})
-            \"\"\"
+            """
             
-            logger.info(\"Executing MERGE with %d columns...\", len(columns))
+            logger.info("Executing MERGE with %d columns...", len(columns))
             spark.sql(merge_sql)
             records_written = records_valid
-        logger.info(\"WRITE complete: %d records\", records_written)
+        logger.info("WRITE complete: %d records", records_written)
         
         # === STAGE 7: CHECKPOINT ===
-        current_stage = \"CHECKPOINT\"
+        current_stage = "CHECKPOINT"
         update_checkpoint(TOPIC_NAME, max_ingestion_ts)
         
         # Final summary
         final_count = spark.table(STANDARDIZED_TABLE).count()
-        logger.info(\"=== PROCESSING SUMMARY ===\")
-        logger.info(\"Records IN: %d\", records_in)
-        logger.info(\"Records VALID: %d\", records_valid)
-        logger.info(\"Records ERROR: %d\", records_error)
-        logger.info(\"Records WRITTEN: %d\", records_written)
-        logger.info(\"Table TOTAL: %d\", final_count)
-        logger.info(\"Accountability: %d of %d (%.1f%%)\", 
+        logger.info("=== PROCESSING SUMMARY ===")
+        logger.info("Records IN: %d", records_in)
+        logger.info("Records VALID: %d", records_valid)
+        logger.info("Records ERROR: %d", records_error)
+        logger.info("Records WRITTEN: %d", records_written)
+        logger.info("Table TOTAL: %d", final_count)
+        logger.info("Accountability: %d of %d (%.1f%%)", 
                    records_valid + records_error, records_in,
                    100.0 * (records_valid + records_error) / records_in if records_in > 0 else 0)
         
         job.commit()
-        logger.info(\"Job completed successfully\")
+        logger.info("Job completed successfully")
         
     except Exception as e:
-        logger.error(\"=== JOB FAILED at stage: %s ===\", current_stage)
-        logger.error(\"Error: %s\", str(e))
-        logger.error(\"Records processed before failure: IN=%d, VALID=%d, ERROR=%d\",
+        logger.error("=== JOB FAILED at stage: %s ===", current_stage)
+        logger.error("Error: %s", str(e))
+        logger.error("Records processed before failure: IN=%d, VALID=%d, ERROR=%d",
                     records_in, records_valid, records_error)
         raise  # Re-raise to fail the job
 
 
-if __name__ == \"__main__\":
+if __name__ == "__main__":
     main()
+
