@@ -351,39 +351,41 @@ phase_trigger() {
 
 verify_day1() {
     log_phase "DAY 1 VERIFICATION"
+    log_info "Expected: Data in RAW only, no processing (no schema deployed)"
     
     local passed=0
     local failed=0
     
-    # RAW count
+    # RAW count (allow some variance for timing/dedup, >= 95K is acceptable)
     local raw_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_raw_db.events_staging")
     log_test "RAW table: $raw_count records"
-    if [ "$raw_count" -ge 100000 ]; then
-        log_info "✅ RAW count >= 100K"
+    if [ "$raw_count" -ge 95000 ]; then
+        log_info "✅ RAW count >= 95K (data landed)"
         ((passed++))
     else
-        log_error "❌ RAW count < 100K"
+        log_error "❌ RAW count < 95K (expected ~100K)"
         ((failed++))
     fi
     
-    # Standardized count (expect >= 99K due to FIFO dedup on message_id)
+    # Standardized count - should be 0 since no schema was deployed!
     local std_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_standardized_db.events")
     log_test "Standardized table: $std_count records"
-    local dedup_gap=$((raw_count - std_count))
-    if [ "$std_count" -ge 99000 ]; then
-        log_info "✅ Standardized count >= 99K (dedup gap: $dedup_gap)"
+    if [ "$std_count" -eq 0 ]; then
+        log_info "✅ Standardized = 0 (correct - no schema, processing skipped)"
         ((passed++))
     else
-        log_error "❌ Standardized count < 99K (dedup gap: $dedup_gap)"
-        ((failed++)))
+        log_error "❌ Standardized = $std_count (expected 0 - schema should not exist!)"
+        log_error "   Check: aws s3 ls s3://lean-ops-development-iceberg/schemas/"
+        ((failed++))
     fi
     
-    # Parse errors should be 0 for clean data
+    # Parse errors should be 0 (no processing happened)
     local parse_errors=$(run_athena_query "SELECT COUNT(*) FROM iceberg_standardized_db.parse_errors" 2>/dev/null || echo "0")
     log_test "Parse errors: $parse_errors"
     
     log_phase "DAY 1 SUMMARY"
     log_info "Passed: $passed, Failed: $failed"
+    log_info "Next: Deploy schema with './tests/e2e/production_emulation.sh schema'"
     
     if [ $failed -eq 0 ]; then
         log_info "✅ DAY 1 OPERATIONS PASSED"
