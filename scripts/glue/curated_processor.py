@@ -326,76 +326,134 @@ def write_to_curated(df, is_first_run: bool):
 # =============================================================================
 
 def main():
-    """Main entry point for Curated processing."""
-    logger.info("Starting Curated processing for topic: %s", TOPIC_NAME)
+    """
+    Main entry point for Curated processing.
     
-    # Load schema
-    schema = load_schema(SCHEMA_BUCKET, "schemas/curated_schema.json")
+    Stages:
+        1. INIT: Load schema (with validation)
+        2. CHECKPOINT: Get last checkpoint
+        3. READ: Read Standardized data
+        4. CDE_VALIDATE: Validate Critical Data Elements
+        5. CAST: Type casting
+        6. WRITE: MERGE to Curated table
+        7. UPDATE_CHECKPOINT: Update DynamoDB
+    """
+    current_stage = "INIT"
+    records_in = 0
+    records_valid = 0
+    records_error = 0
+    records_written = 0
     
-    # Get last checkpoint (ingestion_ts as BIGINT epoch)
-    last_checkpoint = get_last_checkpoint(TOPIC_NAME)
-    logger.info("Last checkpoint (ingestion_ts): %d", last_checkpoint)
-    
-    # Read Standardized data incrementally using ingestion_ts (BIGINT)
-    standardized_df = spark.table(STANDARDIZED_TABLE).filter(
-        F.col("ingestion_ts") > F.lit(last_checkpoint)
-    )
-    
-    record_count = standardized_df.count()
-    logger.info("Records to process: %d", record_count)
-    
-    if record_count == 0:
-        logger.info("No new records to process")
-        job.commit()
-        return
-    
-    # Get max ingestion_ts for new checkpoint (BIGINT)
-    max_ts = standardized_df.agg(F.max("ingestion_ts")).collect()[0][0]
-    logger.info("Max ingestion_ts: %d", max_ts if max_ts else 0)
-    
-    # Validate CDEs
-    valid_df, errors_df = validate_cdes(standardized_df, schema)
-    
-    # Write errors
-    write_errors(errors_df)
-    
-    # Cast types
-    typed_df = cast_types(valid_df, schema)
-    
-    # Add audit columns
-    typed_df = add_audit_columns(typed_df, schema)
-    
-    # Select only columns defined in schema + audit
-    schema_columns = list(schema.get('columns', {}).keys())
-    audit_columns = list(schema.get('audit_columns', {}).keys())
-    passthrough = schema.get('passthrough_columns', [])
-    
-    all_columns = schema_columns + audit_columns
-    available_columns = [c for c in all_columns if c in typed_df.columns]
-    final_df = typed_df.select(*available_columns)
-    
-    # Check if first run
-    is_first_run = True
     try:
-        snapshots_df = spark.sql(f"SELECT * FROM {CURATED_TABLE}.snapshots LIMIT 1")
-        if snapshots_df.count() > 0:
-            is_first_run = False
-            logger.info("Curated table has existing snapshots")
+        logger.info("Starting Curated processing for topic: %s", TOPIC_NAME)
+        
+        # === STAGE 1: INIT (Load and Validate Schema) ===
+        current_stage = "INIT"
+        try:
+            schema = load_schema(SCHEMA_BUCKET, "schemas/curated_schema.json")
+        except Exception as e:
+            logger.error("Failed to load curated schema: %s", e)
+            raise RuntimeError(f"Schema loading failed: {e}")
+        
+        # Validate schema structure
+        if not schema.get('columns'):
+            raise RuntimeError("Schema missing 'columns' definition")
+        logger.info("Schema loaded successfully with %d columns", len(schema.get('columns', {})))
+        
+        # === STAGE 2: CHECKPOINT ===
+        current_stage = "CHECKPOINT"
+        last_checkpoint = get_last_checkpoint(TOPIC_NAME)
+        logger.info("Last checkpoint (ingestion_ts): %d", last_checkpoint)
+        
+        # === STAGE 3: READ ===
+        current_stage = "READ"
+        standardized_df = spark.table(STANDARDIZED_TABLE).filter(
+            F.col("ingestion_ts") > F.lit(last_checkpoint)
+        )
+        records_in = standardized_df.count()
+        logger.info("Records to process: %d", records_in)
+        
+        if records_in == 0:
+            logger.info("No new records to process - exiting gracefully")
+            job.commit()
+            return
+        
+        max_ts = standardized_df.agg(F.max("ingestion_ts")).collect()[0][0]
+        logger.info("Max ingestion_ts: %d", max_ts if max_ts else 0)
+        
+        # === STAGE 4: CDE_VALIDATE ===
+        current_stage = "CDE_VALIDATE"
+        valid_df, errors_df = validate_cdes(standardized_df, schema)
+        records_valid = valid_df.count()
+        records_error = errors_df.count() if errors_df else 0
+        
+        # Write CDE errors (non-fatal if write fails)
+        if errors_df and records_error > 0:
+            try:
+                write_errors(errors_df)
+            except Exception as e:
+                logger.error("Failed to write CDE errors (non-fatal): %s", e)
+        
+        if records_valid == 0:
+            logger.info("No valid records after CDE validation - updating checkpoint and exiting")
+            update_checkpoint(TOPIC_NAME, max_ts if max_ts else last_checkpoint)
+            job.commit()
+            return
+        
+        # === STAGE 5: CAST ===
+        current_stage = "CAST"
+        typed_df = cast_types(valid_df, schema)
+        typed_df = add_audit_columns(typed_df, schema)
+        
+        # Select only columns defined in schema + audit
+        schema_columns = list(schema.get('columns', {}).keys())
+        audit_columns = list(schema.get('audit_columns', {}).keys())
+        all_columns = schema_columns + audit_columns
+        available_columns = [c for c in all_columns if c in typed_df.columns]
+        final_df = typed_df.select(*available_columns)
+        
+        # === STAGE 6: WRITE ===
+        current_stage = "WRITE"
+        is_first_run = True
+        try:
+            snapshots_df = spark.sql(f"SELECT * FROM {CURATED_TABLE}.snapshots LIMIT 1")
+            if snapshots_df.count() > 0:
+                is_first_run = False
+        except Exception:
+            pass  # First run
+        
+        write_to_curated(final_df, is_first_run)
+        records_written = final_df.count()
+        logger.info("WRITE complete: %d records", records_written)
+        
+        # === STAGE 7: UPDATE_CHECKPOINT ===
+        current_stage = "UPDATE_CHECKPOINT"
+        update_checkpoint(TOPIC_NAME, max_ts if max_ts else last_checkpoint)
+        
+        # Final summary
+        final_count = spark.table(CURATED_TABLE).count()
+        curated_errors = spark.table(ERRORS_TABLE).count()
+        
+        logger.info("=== PROCESSING SUMMARY ===")
+        logger.info("Records IN: %d", records_in)
+        logger.info("Records VALID: %d", records_valid)
+        logger.info("Records CDE_ERROR: %d", records_error)
+        logger.info("Records WRITTEN: %d", records_written)
+        logger.info("Curated TOTAL: %d", final_count)
+        logger.info("Curated ERRORS: %d", curated_errors)
+        logger.info("Accountability: %d of %d (%.1f%%)", 
+                   records_valid + records_error, records_in,
+                   100.0 * (records_valid + records_error) / records_in if records_in > 0 else 0)
+        
+        job.commit()
+        logger.info("Job completed successfully")
+        
     except Exception as e:
-        logger.info("First run detected (no snapshots): %s", e)
-    
-    # Write to Curated
-    write_to_curated(final_df, is_first_run)
-    
-    # Update checkpoint with max ingestion_ts
-    update_checkpoint(TOPIC_NAME, max_ts if max_ts else last_checkpoint)
-    
-    # Get final count
-    final_count = spark.table(CURATED_TABLE).count()
-    logger.info("Curated table now has %d total records", final_count)
-    
-    job.commit()
-    logger.info("Job completed successfully")
+        logger.error("=== JOB FAILED at stage: %s ===", current_stage)
+        logger.error("Error: %s", str(e))
+        logger.error("Records processed before failure: IN=%d, VALID=%d, ERROR=%d",
+                    records_in, records_valid, records_error)
+        raise  # Re-raise to fail the job
 
 
 if __name__ == "__main__":
