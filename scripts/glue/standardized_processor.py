@@ -256,6 +256,37 @@ def main():
         df_flattened = flatten_json_payload(df_valid)
         logger.info("Columns after flattening: %d", len(df_flattened.columns))
         
+        # === STAGE 4b: COLUMN MAPPING ===
+        # Map flattened columns to standard names for dedup and downstream processing
+        column_mappings = {
+            # Source column (from flattening) -> Target column (standard name)
+            "_metadata_idempotencykeyresource": "idempotency_key",
+            "_metadata_periodreference": "period_reference",
+            "_metadata_correlationid": "correlation_id",
+        }
+        
+        for source_col, target_col in column_mappings.items():
+            if source_col in df_flattened.columns:
+                if target_col not in df_flattened.columns:
+                    df_flattened = df_flattened.withColumn(target_col, F.col(source_col))
+                    logger.info("Mapped %s -> %s", source_col, target_col)
+                else:
+                    # Target exists but might be null - coalesce with source
+                    df_flattened = df_flattened.withColumn(
+                        target_col, 
+                        F.coalesce(F.col(target_col), F.col(source_col))
+                    )
+        
+        # Ensure idempotency_key has a value (fallback to message_id if still null)
+        if "idempotency_key" in df_flattened.columns:
+            df_flattened = df_flattened.withColumn(
+                "idempotency_key",
+                F.coalesce(F.col("idempotency_key"), F.col("message_id"))
+            )
+        else:
+            df_flattened = df_flattened.withColumn("idempotency_key", F.col("message_id"))
+            logger.info("Created idempotency_key from message_id (fallback)")
+        
         # === STAGE 5: EVOLVE ===
         current_stage = "EVOLVE"
         df_flattened = safe_cast_to_string(df_flattened)
