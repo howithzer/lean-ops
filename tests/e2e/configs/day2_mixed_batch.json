@@ -1,0 +1,41 @@
+{
+    "name": "Day 2: Mixed Batch",
+    "description": "50K mixed records: corrections, late arrivals, schema drift, error cases",
+    "run_mode": "local",
+    "log_format": "user",
+    "log_level": "INFO",
+    "sink_type": "sqs",
+    "concurrency": 10,
+    "batch_size": 100,
+    "total_records": 50000,
+    "metrics_interval_seconds": 30,
+    "test_metadata": {
+        "test_id": "day2_mixed",
+        "batch_id": "day2",
+        "phase": "day2"
+    },
+    "schema_config": {
+        "base_schema": "../../Testing_Framework_EEH_2.0/sample-data-generator/schemas/iceberg_raw_events_v2.json",
+        "drift": {
+            "enabled": true,
+            "percentage": 0.2,
+            "add_columns": true,
+            "delete_columns": false,
+            "reorder_columns": false,
+            "type_changes": false
+        },
+        "duplicates": {
+            "enabled": true,
+            "percentage": 0.1
+        }
+    },
+    "error_injection": {
+        "enabled": true,
+        "empty_payload_percentage": 0.05,
+        "cde_violation_percentage": 0.03
+    },
+    "sqs_config": {
+        "target_sqs_url": "https://sqs.us-east-1.amazonaws.com/487500748616/lean-ops-dev-events-queue",
+        "region": "us-east-1"
+    }
+}
