@@ -111,13 +111,17 @@ ingestion_ts    BIGINT   -- Epoch timestamp of landing
 - `events` - Standardized events (all columns STRING)
 - `parse_errors` - Records that failed JSON parsing
 
-**Processing Logic**:
-1. Read from RAW where `ingestion_ts > last_checkpoint`
-2. FIFO deduplication on `message_id` (removes network duplicates)
-3. Flatten nested JSON into columns (e.g., `event.userId` → `event_userid`)
-4. Map metadata columns (e.g., `_metadata_idempotencykeyresource` → `idempotency_key`)
-5. Schema evolution: add new columns dynamically
-6. MERGE into Standardized table
+**Processing Logic** (Target Design - Snapshot-Based):
+1. Get current RAW snapshot ID
+2. Read incremental data: `start-snapshot-id` → `end-snapshot-id` (Iceberg time-travel)
+3. FIFO deduplication on `message_id` (removes network duplicates)
+4. Flatten nested JSON into columns (e.g., `event.userId` → `event_userid`)
+5. Map metadata columns (e.g., `_metadata_idempotencykeyresource` → `idempotency_key`)
+6. Schema evolution: add new columns dynamically
+7. MERGE into Standardized table
+8. Save snapshot ID to DynamoDB checkpoint
+
+> ⚠️ **Note**: Current implementation uses timestamp-based reads (`ingestion_ts > checkpoint`). Migration to snapshot-based is on the roadmap.
 
 **Key Columns After Flattening**:
 ```
@@ -136,12 +140,14 @@ event_metadata_ipaddress, event_metadata_deviceid, event_metadata_useragent
 - `events` - Curated events (typed, validated)
 - `errors` - CDE validation failures
 
-**Processing Logic**:
+**Processing Logic** (Timestamp-Based - Curated uses MERGE, not append-only):
 1. Read from Standardized where `ingestion_ts > last_checkpoint`
 2. Validate CDEs (required fields that cannot be NULL)
 3. Route invalid records to `errors` table
 4. Cast STRING columns to proper types (INT, TIMESTAMP, DECIMAL)
 5. MERGE into Curated table on `idempotency_key`
+
+> **Note**: Curated uses timestamp-based reads because MERGE invalidates snapshots. Snapshot-based reads are for append-only tables (RAW).
 
 **Schema-Driven**: Uses `schemas/curated_schema.json` for:
 - Column definitions and types
@@ -438,6 +444,7 @@ AWS_PROFILE=terraform-firehose aws logs tail /aws-glue/jobs/output --follow
 
 | Feature | Priority | Notes |
 |---------|----------|-------|
+| **Snapshot-Based Incremental Reads** | High | Migrate RAW→Standardized to use Iceberg snapshot IDs instead of `ingestion_ts`. Store snapshot_id in DynamoDB. |
 | **Negative Test Cases** | High | `error_injection` config not implemented in data_injector |
 | DLQ retry mechanism | Medium | Currently drains to table, no retry |
 | Job failure alerting | Medium | SNS wired, needs tuning |
@@ -462,6 +469,7 @@ AWS_PROFILE=terraform-firehose aws logs tail /aws-glue/jobs/output --follow
 
 ### DynamoDB Checkpoint Table
 
+**Current Schema** (Timestamp-based):
 ```
 Table: lean-ops-dev-checkpoints
 
@@ -470,6 +478,18 @@ Table: lean-ops-dev-checkpoints
 | standardization_events | standardized | 1768875000 | 2026-01-19 |
 | curated_events | curated | 1768875000 | 2026-01-19 |
 ```
+
+**Target Schema** (Snapshot-based for RAW→Standardized):
+```
+Table: lean-ops-dev-checkpoints
+
+| pipeline_id | checkpoint_type | last_snapshot_id | last_ingestion_ts | updated_at |
+|-------------|-----------------|------------------|-------------------|------------|
+| standardization_events | standardized | 8234567890123 | 1768875000 | 2026-01-19 |
+| curated_events | curated | NULL | 1768875000 | 2026-01-19 |
+```
+
+> **Note**: `last_snapshot_id` used for append-only tables (RAW). `last_ingestion_ts` used for MERGE tables (Curated).
 
 ---
 
