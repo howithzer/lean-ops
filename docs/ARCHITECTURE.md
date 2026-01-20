@@ -111,7 +111,7 @@ ingestion_ts    BIGINT   -- Epoch timestamp of landing
 - `events` - Standardized events (all columns STRING)
 - `parse_errors` - Records that failed JSON parsing
 
-**Processing Logic** (Target Design - Snapshot-Based):
+**Processing Logic** (Snapshot-Based Incremental Reads):
 1. Get current RAW snapshot ID
 2. Read incremental data: `start-snapshot-id` → `end-snapshot-id` (Iceberg time-travel)
 3. FIFO deduplication on `message_id` (removes network duplicates)
@@ -121,7 +121,7 @@ ingestion_ts    BIGINT   -- Epoch timestamp of landing
 7. MERGE into Standardized table
 8. Save snapshot ID to DynamoDB checkpoint
 
-> ⚠️ **Note**: Current implementation uses timestamp-based reads (`ingestion_ts > checkpoint`). Migration to snapshot-based is on the roadmap.
+> **Note**: Using Iceberg snapshots provides true exactly-once semantics and handles table compaction gracefully.
 
 **Key Columns After Flattening**:
 ```
@@ -470,6 +470,7 @@ AWS_PROFILE=terraform-firehose aws logs tail /aws-glue/jobs/output --follow
 - [x] Schema evolution (new columns)
 - [x] Error routing (parse_errors, cde_errors)
 - [x] E2E test framework
+- [x] **Snapshot-Based Incremental Reads** - RAW→Standardized uses Iceberg snapshots. DynamoDB stores `last_snapshot_id`.
 
 ### 🔧 In Progress
 
@@ -480,7 +481,6 @@ AWS_PROFILE=terraform-firehose aws logs tail /aws-glue/jobs/output --follow
 
 | Feature | Priority | Notes |
 |---------|----------|-------|
-| **Snapshot-Based Incremental Reads** | High | Migrate RAW→Standardized to use Iceberg snapshot IDs instead of `ingestion_ts`. Store snapshot_id in DynamoDB. |
 | **Negative Test Cases** | High | `error_injection` config not implemented in data_injector |
 | DLQ retry mechanism | Medium | Currently drains to table, no retry |
 | Job failure alerting | Medium | SNS wired, needs tuning |
