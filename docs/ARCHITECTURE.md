@@ -336,13 +336,49 @@ START
 
 ### Accountability Formula
 
+**Full Pipeline Accountability** (end-to-end):
 ```
-Records_In = Records_Valid + Records_Error
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     FULL ACCOUNTABILITY                                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  SQS Messages Received                                                  │
+│    ├── Lambda Success ────────────► Firehose                            │
+│    │     ├── Firehose Success ───► RAW Table                            │
+│    │     └── Firehose Error ─────► Firehose Error Bucket (*)            │
+│    └── Lambda Failure (5x) ──────► DLQ ─► dlq_errors Table              │
+│                                                                         │
+│  RAW Records                                                            │
+│    ├── Valid JSON ───────────────► Standardized Table                   │
+│    └── Invalid JSON ─────────────► parse_errors Table                   │
+│                                                                         │
+│  Standardized Records                                                   │
+│    ├── CDE Valid ────────────────► Curated Table                        │
+│    └── CDE Violation ────────────► cde_errors Table                     │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 
-Accountability % = (Standardized + Parse_Errors + CDE_Errors) / RAW × 100
+(*) Firehose errors land in S3 error prefix, not currently tracked in table
 ```
 
-**Target**: 100% accountability (every record is accounted for)
+**Pre-RAW Accountability** (ingestion layer):
+```
+Pre_RAW_Accountability % = (RAW + DLQ_Errors + Firehose_Errors) / SQS_Messages × 100
+```
+
+**Post-RAW Accountability** (processing layer):
+```
+Post_RAW_Accountability % = (Standardized + Parse_Errors) / RAW × 100
+```
+
+**Curated Accountability**:
+```
+Curated_Accountability % = (Curated + CDE_Errors) / Standardized × 100
+```
+
+> ⚠️ **Current Implementation**: Only tracks Post-RAW accountability. Pre-RAW tracking (SQS metrics, Firehose errors) is on the roadmap.
+
+**Target**: 100% accountability at each layer
 
 ---
 
