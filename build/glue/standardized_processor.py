@@ -72,18 +72,21 @@ STANDARDIZED_TABLE = f"glue_catalog.{STANDARDIZED_DATABASE}.events"
 
 
 # =============================================================================
-# CHECKPOINT FUNCTIONS
+# CHECKPOINT FUNCTIONS (Snapshot-based for RAW reads)
 # =============================================================================
 
-def get_last_checkpoint(topic_name: str) -> int:
+def get_last_snapshot_checkpoint(topic_name: str) -> str:
     """
-    Get last processed ingestion_ts from DynamoDB checkpoint table.
+    Get last processed snapshot ID from DynamoDB checkpoint table.
+    
+    For RAW -> Standardized, we use Iceberg snapshots for true incremental reads.
+    This is more robust than timestamp-based reads since snapshots are immutable.
     
     Args:
         topic_name: Topic identifier for the checkpoint
     
     Returns:
-        Last processed ingestion_ts as integer (0 if not found)
+        Last processed snapshot ID as string ("0" if not found/first run)
     """
     import boto3
     dynamodb = boto3.resource('dynamodb')
@@ -95,22 +98,83 @@ def get_last_checkpoint(topic_name: str) -> int:
             'checkpoint_type': 'standardized'
         })
         if 'Item' in response:
-            checkpoint = int(response['Item'].get('last_ingestion_ts', 0))
-            logger.info("Retrieved checkpoint for %s: %d", topic_name, checkpoint)
-            return checkpoint
+            snapshot_id = response['Item'].get('last_snapshot_id', "0")
+            # Also keep ingestion_ts for backward compatibility / debugging
+            ingestion_ts = response['Item'].get('last_ingestion_ts', 0)
+            logger.info("Retrieved checkpoint for %s: snapshot=%s, ingestion_ts=%d", 
+                       topic_name, snapshot_id, ingestion_ts)
+            return str(snapshot_id)
     except Exception as e:
         logger.error("Error getting checkpoint: %s", e)
     
-    return 0
+    return "0"
 
 
-def update_checkpoint(topic_name: str, checkpoint_value: int) -> None:
+def get_current_snapshot_id(table_path: str) -> str:
     """
-    Update checkpoint in DynamoDB.
+    Get the latest snapshot ID of an Iceberg table.
+    
+    Args:
+        table_path: Full Iceberg table path (e.g., glue_catalog.db.table)
+    
+    Returns:
+        Current snapshot ID as string, or "0" if table has no snapshots
+    """
+    try:
+        snapshots_df = spark.sql(
+            f"SELECT snapshot_id FROM {table_path}.snapshots ORDER BY committed_at DESC LIMIT 1"
+        )
+        if snapshots_df.count() > 0:
+            return str(snapshots_df.first()['snapshot_id'])
+    except Exception as e:
+        logger.warning("Could not get snapshot ID for %s: %s", table_path, e)
+    
+    return "0"
+
+
+def read_incremental_from_raw(table_path: str, start_snapshot: str, end_snapshot: str):
+    """
+    Read incremental data from RAW table using Iceberg snapshots.
+    
+    Uses Iceberg's snapshot-based incremental read:
+    - start_snapshot: Exclusive (read AFTER this snapshot)
+    - end_snapshot: Inclusive (read UP TO this snapshot)
+    
+    Args:
+        table_path: Full Iceberg table path
+        start_snapshot: Last processed snapshot ID ("0" for first run)
+        end_snapshot: Current snapshot ID to read up to
+    
+    Returns:
+        DataFrame of new records, or None if no new data
+    """
+    if start_snapshot == "0" or start_snapshot is None:
+        # First run - read all data
+        logger.info("First run: Performing full table scan of %s", table_path)
+        return spark.read.format("iceberg").load(table_path)
+    
+    if end_snapshot == start_snapshot:
+        # No new snapshots since last run
+        logger.info("No new snapshots since %s - no data to process", start_snapshot)
+        return None
+    
+    # Incremental read between snapshots
+    logger.info("Reading incremental data: (%s, %s]", start_snapshot, end_snapshot)
+    
+    return spark.read.format("iceberg") \
+        .option("start-snapshot-id", start_snapshot) \
+        .option("end-snapshot-id", end_snapshot) \
+        .load(table_path)
+
+
+def update_checkpoint(topic_name: str, snapshot_id: str, max_ingestion_ts: int) -> None:
+    """
+    Update checkpoint in DynamoDB with snapshot ID and ingestion_ts.
     
     Args:
         topic_name: Topic identifier for the checkpoint
-        checkpoint_value: New ingestion_ts value to store
+        snapshot_id: New snapshot ID to store (primary checkpoint)
+        max_ingestion_ts: Max ingestion_ts for debugging/fallback
     """
     import boto3
     dynamodb = boto3.resource('dynamodb')
@@ -119,11 +183,13 @@ def update_checkpoint(topic_name: str, checkpoint_value: int) -> None:
     table.put_item(Item={
         'pipeline_id': f'standardization_{topic_name}',
         'checkpoint_type': 'standardized',
-        'last_ingestion_ts': checkpoint_value,
+        'last_snapshot_id': snapshot_id,
+        'last_ingestion_ts': max_ingestion_ts,
         'updated_at': datetime.utcnow().isoformat()
     })
     
-    logger.info("Checkpoint updated: standardization_%s/standardized -> %d", topic_name, checkpoint_value)
+    logger.info("Checkpoint updated: standardization_%s -> snapshot=%s, ingestion_ts=%d", 
+               topic_name, snapshot_id, max_ingestion_ts)
 
 
 # =============================================================================
@@ -183,24 +249,42 @@ def main():
     try:
         logger.info("Starting Standardized processing for topic: %s", TOPIC_NAME)
         
-        # === STAGE 1: INIT ===
+        # === STAGE 1: INIT (Snapshot Checkpoint) ===
         current_stage = "INIT"
-        last_checkpoint = get_last_checkpoint(TOPIC_NAME)
-        logger.info("Last checkpoint: %d", last_checkpoint)
+        last_snapshot = get_last_snapshot_checkpoint(TOPIC_NAME)
+        logger.info("Last processed snapshot: %s", last_snapshot)
         
-        # === STAGE 2: READ ===
+        # Get current snapshot of RAW table (for checkpoint after job)
+        current_snapshot = get_current_snapshot_id(RAW_TABLE)
+        logger.info("Current RAW snapshot: %s", current_snapshot)
+        
+        if current_snapshot == "0":
+            logger.info("RAW table has no snapshots - exiting gracefully")
+            job.commit()
+            return
+        
+        # === STAGE 2: READ (Snapshot-based Incremental) ===
         current_stage = "READ"
-        raw_df = spark.table(RAW_TABLE).filter(F.col("ingestion_ts") > last_checkpoint)
+        raw_df = read_incremental_from_raw(RAW_TABLE, last_snapshot, current_snapshot)
+        
+        if raw_df is None:
+            logger.info("No new data to process - exiting gracefully")
+            job.commit()
+            return
+        
         records_in = raw_df.count()
         logger.info("Records to process: %d", records_in)
         
         if records_in == 0:
-            logger.info("No new records to process - exiting gracefully")
+            logger.info("No new records to process - updating checkpoint and exiting")
+            update_checkpoint(TOPIC_NAME, current_snapshot, 0)
             job.commit()
             return
         
+        # Get max ingestion_ts for debugging/logging (not for checkpoint)
         max_ingestion_ts = raw_df.agg(F.max("ingestion_ts")).collect()[0][0]
-        logger.info("Max ingestion_ts: %d", max_ingestion_ts)
+        max_ingestion_ts = int(max_ingestion_ts) if max_ingestion_ts else 0
+        logger.info("Max ingestion_ts: %d (for logging only)", max_ingestion_ts)
         
         # === STAGE 3: VALIDATE ===
         current_stage = "VALIDATE"
@@ -247,7 +331,7 @@ def main():
         
         if records_valid == 0:
             logger.info("No valid records after validation - updating checkpoint and exiting")
-            update_checkpoint(TOPIC_NAME, max_ingestion_ts)
+            update_checkpoint(TOPIC_NAME, current_snapshot, max_ingestion_ts)
             job.commit()
             return
         
@@ -333,7 +417,7 @@ def main():
         
         # === STAGE 7: CHECKPOINT ===
         current_stage = "CHECKPOINT"
-        update_checkpoint(TOPIC_NAME, max_ingestion_ts)
+        update_checkpoint(TOPIC_NAME, current_snapshot, max_ingestion_ts)
         
         # Final summary
         final_count = spark.table(STANDARDIZED_TABLE).count()
