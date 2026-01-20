@@ -45,6 +45,26 @@ This pipeline ingests event data from SQS, processes it through three data zones
 
 ## Data Zones
 
+### Multi-Topic Architecture
+
+The pipeline supports **multiple topics**, each with its own tables at each layer:
+
+```
+┌───────────────┬─────────────────────┬─────────────────────┬─────────────────────┐
+│    TOPIC      │       RAW           │   STANDARDIZED      │     CURATED         │
+├───────────────┼─────────────────────┼─────────────────────┼─────────────────────┤
+│   events      │ events_staging      │ events              │ events              │
+│   orders      │ orders_staging      │ orders (TBD)        │ orders (TBD)        │
+│   payments    │ payments_staging    │ payments (TBD)      │ payments (TBD)      │
+└───────────────┴─────────────────────┴─────────────────────┴─────────────────────┘
+
+Note: (TBD) = Table structure ready, schema not yet deployed
+```
+
+> **Important**: Each topic flows through its own set of tables. The Step Function is parameterized with `topic_name` and dynamically routes to the correct tables and schemas.
+
+### Zone Overview
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                           DATA ZONES                                    │
