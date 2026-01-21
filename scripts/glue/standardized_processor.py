@@ -361,15 +361,9 @@ def main():
                         F.coalesce(F.col(target_col), F.col(source_col))
                     )
         
-        # Ensure idempotency_key has a value (fallback to message_id if still null)
-        if "idempotency_key" in df_flattened.columns:
-            df_flattened = df_flattened.withColumn(
-                "idempotency_key",
-                F.coalesce(F.col("idempotency_key"), F.col("message_id"))
-            )
-        else:
-            df_flattened = df_flattened.withColumn("idempotency_key", F.col("message_id"))
-            logger.info("Created idempotency_key from message_id (fallback)")
+        # Note: idempotency_key and message_id are INDEPENDENT required fields
+        # Both must be NOT NULL - no fallback behavior
+        # NULL values will be caught by CDE validation in the Curated layer
         
         # === STAGE 5: EVOLVE ===
         current_stage = "EVOLVE"
