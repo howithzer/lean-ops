@@ -222,11 +222,12 @@ deploy_infrastructure() {
     log_info "Uploading Glue artifacts to S3..."
     ./scripts/build_glue.sh --upload
     
-    # Upload schema
-    log_info "Uploading schema..."
-    aws s3 cp schemas/events.json "s3://$BUCKET/schemas/events.json"
+    # NOTE: Schema files are NOT uploaded during deploy.
+    # Schema = data onboarding config, separate from infrastructure.
+    # Use: ./tests/e2e/production_emulation.sh schema
     
     log_info "Infrastructure deployed successfully"
+    log_info "To enable data processing, deploy schema: ./tests/e2e/production_emulation.sh schema"
 }
 
 destroy_infrastructure() {
@@ -317,7 +318,11 @@ run_single_test() {
 }
 
 run_e2e_tests() {
+    local filter="${1:-}"
     log_step "Running E2E Test Suite"
+    if [ -n "$filter" ]; then
+        log_info "Running tests matching filter: '$filter'"
+    fi
     
     get_state_machine_arn || { log_error "Deploy infrastructure first"; exit 1; }
     
@@ -326,6 +331,10 @@ run_e2e_tests() {
     local tests=()
     local test_num=0
     local total_tests=0
+    
+    # Initialize count variables to avoid unbound variable errors if tests are skipped
+    local curated_count="0"
+    local curated_errors="0"
     
     # Test definitions: name|config|records|wait
     # Core tests (always run)
@@ -352,6 +361,14 @@ run_e2e_tests() {
     
     for test_def in "${tests[@]}"; do
         IFS='|' read -r name config records wait <<< "$test_def"
+        
+        # Filter tests
+        if [ -n "$filter" ]; then
+            if [[ ! "$name" =~ $filter ]]; then
+                continue
+            fi
+        fi
+        
         ((test_num++))
         
         if [ -f "$config" ]; then
@@ -369,9 +386,10 @@ run_e2e_tests() {
     done
     
     # Test: DDL Verification - check schema drift columns were added
-    ((test_num++))
-    log_info ""
-    log_test "Running: DDL Schema Verification [Test #$test_num of $total_tests]"
+    if [ -z "$filter" ] || [[ "DDL Schema Verification" =~ $filter ]]; then
+        ((test_num++))
+        log_info ""
+        log_test "Running: DDL Schema Verification [Test #$test_num of $total_tests]"
     
     # Expected columns from schema drift tests:
     # - test_flat_schema_evolution.json adds: customTag, extraMetric
@@ -386,11 +404,13 @@ run_e2e_tests() {
         log_error "❌ DDL Schema Verification FAILED"
         ((failed++))
     fi
+    fi
     
     # Test: Curated Layer Data Verification
-    ((test_num++))
-    log_info ""
-    log_test "Running: Curated Layer Data [Test #$test_num of $total_tests]"
+    if [ -z "$filter" ] || [[ "Curated Layer Data" =~ $filter ]]; then
+        ((test_num++))
+        log_info ""
+        log_test "Running: Curated Layer Data [Test #$test_num of $total_tests]"
     
     curated_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_curated_db.events" 2>/dev/null || echo "0")
     if [ "$curated_count" != "0" ] && [ "$curated_count" != "" ]; then
@@ -402,11 +422,13 @@ run_e2e_tests() {
         log_error "❌ Curated Layer Data FAILED"
         ((failed++))
     fi
+    fi
     
     # Test: Curated Errors Check (should be 0 for clean test data)
-    ((test_num++))
-    log_info ""
-    log_test "Running: Curated Errors Check [Test #$test_num of $total_tests]"
+    if [ -z "$filter" ] || [[ "Curated Errors Check" =~ $filter ]]; then
+        ((test_num++))
+        log_info ""
+        log_test "Running: Curated Errors Check [Test #$test_num of $total_tests]"
     
     curated_errors=$(run_athena_query "SELECT COUNT(*) FROM iceberg_curated_db.errors" 2>/dev/null || echo "0")
     # For now, we accept 0 errors as success (clean data)
@@ -420,12 +442,16 @@ run_e2e_tests() {
         log_info "✅ Curated Errors Check PASSED (errors captured correctly)"
         ((passed++))
     fi
+    fi
     
     # Final record count verification
     log_step "Final Verification"
     
     raw_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_raw_db.events_staging")
     standardized_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_standardized_db.events")
+    # Always query Curated counts in Final Verification (don't rely on skipped test variables)
+    curated_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_curated_db.events" 2>/dev/null || echo "0")
+    curated_errors=$(run_athena_query "SELECT COUNT(*) FROM iceberg_curated_db.errors" 2>/dev/null || echo "0")
     
     log_info "RAW table: $raw_count records"
     log_info "Standardized table: $standardized_count records"
@@ -505,7 +531,7 @@ case "${1:-}" in
         deploy_infrastructure
         ;;
     e2e)
-        run_e2e_tests
+        run_e2e_tests "${2:-}"
         ;;
     quick)
         run_quick_test

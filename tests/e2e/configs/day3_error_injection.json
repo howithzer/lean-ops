@@ -1,0 +1,32 @@
+{
+    "run_mode": "local",
+    "log_format": "user",
+    "log_level": "INFO",
+    "sink_type": "sqs",
+    "concurrency": 5,
+    "batch_size": 100,
+    "total_records": 1000,
+    "metrics_interval_seconds": 30,
+    "schema_config": {
+        "base_schema": "../../Testing_Framework_EEH_2.0/sample-data-generator/schemas/iceberg_raw_events_v2.json",
+        "drift": {
+            "enabled": false
+        },
+        "duplicates": {
+            "enabled": false
+        },
+        "error_injection": {
+            "enabled": true,
+            "empty_payload_percentage": 0.05,
+            "cde_violation_percentage": 0.05,
+            "cde_fields_to_null": [
+                "_metadata.idempotencyKeyResource",
+                "eventTimestamp"
+            ]
+        }
+    },
+    "sqs_config": {
+        "target_sqs_url": "https://sqs.us-east-1.amazonaws.com/487500748616/lean-ops-dev-events-queue",
+        "region": "us-east-1"
+    }
+}

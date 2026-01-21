@@ -20,3 +20,9 @@ __pycache__/
 _backup/
 modules/compute/.build/
 tfplan
+
+# Exclude from commits
+*.docx
+scratch_pad/
+build/
+.venv/

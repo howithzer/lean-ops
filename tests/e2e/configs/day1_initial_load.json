@@ -1,0 +1,36 @@
+{
+    "name": "Day 1: Initial Load",
+    "description": "100K clean records for baseline. No schema drift, no duplicates, no errors.",
+    "run_mode": "local",
+    "log_format": "user",
+    "log_level": "INFO",
+    "sink_type": "sqs",
+    "concurrency": 10,
+    "batch_size": 100,
+    "total_records": 100000,
+    "metrics_interval_seconds": 30,
+    "test_metadata": {
+        "test_id": "initial_load",
+        "batch_id": "day1",
+        "phase": "day1"
+    },
+    "schema_config": {
+        "base_schema": "../../Testing_Framework_EEH_2.0/sample-data-generator/schemas/iceberg_raw_events_v2.json",
+        "drift": {
+            "enabled": false,
+            "percentage": 0.0,
+            "add_columns": false,
+            "delete_columns": false,
+            "reorder_columns": false,
+            "type_changes": false
+        },
+        "duplicates": {
+            "enabled": false,
+            "percentage": 0.0
+        }
+    },
+    "sqs_config": {
+        "target_sqs_url": "https://sqs.us-east-1.amazonaws.com/487500748616/lean-ops-dev-events-queue",
+        "region": "us-east-1"
+    }
+}

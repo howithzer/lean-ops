@@ -176,6 +176,7 @@ module "compute" {
   firehose_stream_name     = local.firehose_stream_name  # Pre-computed name
   sqs_queue_arns           = module.messaging.queue_arns
   dlq_arn                  = module.messaging.dlq_arn
+  dlq_url                  = module.messaging.dlq_url
   error_tracker_table_arn  = module.state.error_tracker_table_arn
   error_tracker_table_name = module.state.error_tracker_table_name
   schema_bucket            = var.schema_bucket
