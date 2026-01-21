@@ -1,532 +1,131 @@
 # Lean-Ops Data Pipeline Architecture
 
-> **Version**: 1.0.0  
-> **Last Updated**: 2026-01-19  
-> **Purpose**: Developer onboarding and reference documentation
+> **For Developers** | Last Updated: 2026-01-21
 
 ---
 
-## Table of Contents
+## What Does This Pipeline Do?
 
-1. [Overview](#overview)
-2. [Data Zones](#data-zones)
-3. [Data Flow](#data-flow)
-4. [Step Functions Orchestration](#step-functions-orchestration)
-5. [Error Handling](#error-handling)
-6. [Schema Management](#schema-management)
-7. [Operational Runbook](#operational-runbook)
-8. [Roadmap](#roadmap)
+Think of it like a mail sorting facility:
+
+1. **Mail arrives** (SQS) → **Clerk opens it** (Lambda) → **Puts in truck** (Firehose) → **Warehouse** (RAW)
+2. **Sorter organizes mail** (Standardized Job) → **Inspector checks quality** (Curated Job) → **Ready for delivery** (Athena/Snowflake)
 
 ---
 
-## Overview
+## The Journey of Your Data
 
-This pipeline ingests event data from SQS, processes it through three data zones (RAW → Standardized → Curated), and uses Apache Iceberg tables for ACID transactions and time-travel capabilities.
+```
+Your App → SQS → Lambda → Firehose → RAW Table → Standardized Table → Curated Table → Analysts
+```
 
-### Technology Stack
+### Step-by-Step
 
-| Component | Technology |
-|-----------|------------|
-| **Ingestion** | SQS → Lambda → Kinesis Firehose → Iceberg |
-| **Processing** | AWS Glue Spark ETL |
-| **Storage** | Apache Iceberg on S3 |
-| **Orchestration** | AWS Step Functions |
-| **Checkpointing** | DynamoDB |
-| **Schema Registry** | S3 JSON files |
-
-### Key Design Principles
-
-1. **Schema-Gated Processing**: No processing until schema is deployed
-2. **Two-Stage Deduplication**: FIFO (network duplicates) + LIFO (app corrections)
-3. **100% Data Accountability**: Every record is tracked (processed or error-routed)
-4. **Incremental Processing**: Checkpoint-based to avoid reprocessing
+| Step | What Happens | Analogy |
+|------|--------------|---------|
+| 1. **SQS** | Messages wait in a queue | Mailbox |
+| 2. **Lambda** | Adds `topic_name` to each message | Clerk stamps "from Engineering" |
+| 3. **Firehose** | Batches messages, writes to S3 as Parquet | Mail truck loads up, drives to warehouse |
+| 4. **RAW Table** | Landing zone. No validation. Just store everything. | Warehouse floor - pile of boxes |
+| 5. **Standardized Table** | Flatten JSON, remove duplicates | Unpacking boxes, sorting by type |
+| 6. **Curated Table** | Validate required fields, convert types | Quality check before shipping |
 
 ---
 
-## Data Zones
+## Why Do We Deduplicate Twice?
 
-### Multi-Topic Architecture
+Different problems need different solutions:
 
-The pipeline supports **multiple topics**, each with its own tables at each layer:
-
-```
-┌───────────────┬─────────────────────┬─────────────────────┬─────────────────────┐
-│    TOPIC      │       RAW           │   STANDARDIZED      │     CURATED         │
-├───────────────┼─────────────────────┼─────────────────────┼─────────────────────┤
-│   events      │ events_staging      │ events              │ events              │
-│   orders      │ orders_staging      │ orders (TBD)        │ orders (TBD)        │
-│   payments    │ payments_staging    │ payments (TBD)      │ payments (TBD)      │
-└───────────────┴─────────────────────┴─────────────────────┴─────────────────────┘
-
-Note: (TBD) = Table structure ready, schema not yet deployed
-```
-
-> **Important**: Each topic flows through its own set of tables. The Step Function is parameterized with `topic_name` and dynamically routes to the correct tables and schemas.
-
-### Zone Overview
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           DATA ZONES                                    │
-├─────────────┬─────────────────────────┬─────────────────────────────────┤
-│    RAW      │     STANDARDIZED        │         CURATED                 │
-│  (Landing)  │    (Conformed)          │      (Business-Ready)           │
-├─────────────┼─────────────────────────┼─────────────────────────────────┤
-│ • Direct    │ • Flattened JSON        │ • Typed columns                 │
-│   Firehose  │ • ALL STRING            │ • CDE validated                 │
-│   writes    │ • Network dedup         │ • MERGE on idempotency_key      │
-│ • No schema │ • Dynamic schema        │ • Schema-driven                 │
-│   required  │   evolution             │                                 │
-└─────────────┴─────────────────────────┴─────────────────────────────────┘
-```
-
-### Zone Details
-
-#### 1. RAW Zone (`iceberg_raw_db`)
-
-**Purpose**: Landing zone for raw event data. Data lands here regardless of processing status.
-
-**Tables**:
-- `events_staging` - Raw events from Firehose
-- `orders_staging` - Raw orders (future)
-- `payments_staging` - Raw payments (future)
-
-**Columns**:
-```sql
-message_id      STRING   -- Unique message ID from source
-topic_name      STRING   -- Source topic (events, orders, etc.)
-json_payload    STRING   -- Full JSON payload as string
-ingestion_ts    BIGINT   -- Epoch timestamp of landing
-```
-
-**Important**: Data lands in RAW even if schema is not deployed. Processing only happens when schema exists.
-
----
-
-#### 2. Standardized Zone (`iceberg_standardized_db`)
-
-**Purpose**: Conformed, flattened data with network deduplication applied.
-
-**Tables**:
-- `events` - Standardized events (all columns STRING)
-- `parse_errors` - Records that failed JSON parsing
-
-**Processing Logic** (Snapshot-Based Incremental Reads):
-1. Get current RAW snapshot ID
-2. Read incremental data: `start-snapshot-id` → `end-snapshot-id` (Iceberg time-travel)
-3. FIFO deduplication on `message_id` (removes network duplicates)
-4. Flatten nested JSON into columns (e.g., `event.userId` → `event_userid`)
-5. Map metadata columns (e.g., `_metadata_idempotencykeyresource` → `idempotency_key`)
-6. Schema evolution: add new columns dynamically
-7. MERGE into Standardized table
-8. Save snapshot ID to DynamoDB checkpoint
-
-> **Note**: Using Iceberg snapshots provides true exactly-once semantics and handles table compaction gracefully.
-
-**Key Columns After Flattening**:
-```
-message_id, idempotency_key, publish_time, ingestion_ts, topic_name,
-event_timestamp, event_userid, event_eventtype, event_verb, sessionid,
-event_metadata_ipaddress, event_metadata_deviceid, event_metadata_useragent
-```
-
----
-
-#### 3. Curated Zone (`iceberg_curated_db`)
-
-**Purpose**: Business-ready data with typed columns and CDE (Critical Data Element) validation.
-
-**Tables**:
-- `events` - Curated events (typed, validated)
-- `errors` - CDE validation failures
-
-**Processing Logic** (Timestamp-Based - Curated uses MERGE, not append-only):
-1. Read from Standardized where `ingestion_ts > last_checkpoint`
-2. Validate CDEs (required fields that cannot be NULL)
-3. Route invalid records to `errors` table
-4. Cast STRING columns to proper types (INT, TIMESTAMP, DECIMAL)
-5. MERGE into Curated table on `idempotency_key`
-
-> **Note**: Curated uses timestamp-based reads because MERGE invalidates snapshots. Snapshot-based reads are for append-only tables (RAW).
-
-**Schema-Driven**: Uses `schemas/curated_schema.json` for:
-- Column definitions and types
-- CDE flags (required fields)
-- Default values
-
----
-
-## Data Flow
-
-```
-                                    ┌──────────────────┐
-                                    │   SQS Queue      │
-                                    │ (events-queue)   │
-                                    └────────┬─────────┘
-                                             │
-                                             ▼
-                                    ┌──────────────────┐
-                                    │  Lambda Trigger  │
-                                    │ (SQS → Firehose) │
-                                    └────────┬─────────┘
-                                             │
-                                             ▼
-                                    ┌──────────────────┐
-                                    │  Kinesis Firehose│
-                                    │ (Direct to       │
-                                    │  Iceberg)        │
-                                    └────────┬─────────┘
-                                             │
-           ┌─────────────────────────────────┼─────────────────────────────────┐
-           │                                 │                                 │
-           │                                 ▼                                 │
-           │                        ┌──────────────────┐                       │
-           │                        │    RAW TABLE     │                       │
-           │                        │ events_staging   │                       │
-           │                        └────────┬─────────┘                       │
-           │                                 │                                 │
-           │              ┌──────────────────┼──────────────────┐              │
-           │              │                  │                  │              │
-           │              ▼                  ▼                  ▼              │
-           │     ┌────────────────┐  ┌──────────────┐  ┌────────────────┐      │
-           │     │ Schema Check   │  │  If Schema   │  │  If No Schema  │      │
-           │     │ (events.json)  │──│    EXISTS    │  │  SKIP TO END   │      │
-           │     └────────────────┘  └──────┬───────┘  └────────────────┘      │
-           │                                │                                  │
-           │                                ▼                                  │
-           │                       ┌──────────────────┐                        │
-           │                       │ STANDARDIZED JOB │                        │
-           │                       │ • FIFO Dedup     │                        │
-           │                       │ • Flatten JSON   │                        │
-           │                       │ • Schema Evolve  │                        │
-           │                       └────────┬─────────┘                        │
-           │                                │                                  │
-           │                   ┌────────────┼────────────┐                     │
-           │                   │            │            │                     │
-           │                   ▼            ▼            ▼                     │
-           │          ┌─────────────┐ ┌───────────┐ ┌─────────────┐            │
-           │          │ STANDARDIZED│ │  PARSE    │ │   CURATED   │            │
-           │          │   TABLE     │ │  ERRORS   │ │    JOB      │            │
-           │          │  (events)   │ │  TABLE    │ │ • CDE Valid │            │
-           │          └─────────────┘ └───────────┘ │ • Type Cast │            │
-           │                                        │ • MERGE     │            │
-           │                                        └──────┬──────┘            │
-           │                                               │                   │
-           │                                  ┌────────────┼────────────┐      │
-           │                                  ▼            ▼            ▼      │
-           │                          ┌─────────────┐ ┌───────────┐            │
-           │                          │  CURATED    │ │   CDE     │            │
-           │                          │   TABLE     │ │  ERRORS   │            │
-           │                          │  (events)   │ │  TABLE    │            │
-           │                          └─────────────┘ └───────────┘            │
-           │                                                                   │
-           └───────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Step Functions Orchestration
-
-The Step Function runs on a 15-minute schedule (EventBridge) and orchestrates the full pipeline.
-
-### State Machine Flow
-
-```
-START
-  │
-  ▼
-┌─────────────────────────┐
-│ 1. CheckSchemaExists    │  ← Check for schemas/{topic}.json in S3
-│    (Lambda)             │
-└───────────┬─────────────┘
-            │
-            ▼
-┌─────────────────────────┐
-│ 2. SchemaGate (Choice)  │
-└───────────┬─────────────┘
-            │
-     ┌──────┴──────┐
-     │             │
-     ▼             ▼
-  [No Schema]   [Schema Exists]
-     │             │
-     ▼             ▼
-  ┌──────────┐  ┌─────────────────────────┐
-  │SkipNoSchema│ │3. EnsureStandardizedTable│
-  │ (Success) │  │    (Lambda - DDL)       │
-  └──────────┘  └───────────┬─────────────┘
-                            │
-                            ▼
-                ┌─────────────────────────┐
-                │ 4. RunStandardized      │  ← Glue Job (RAW → Standardized)
-                │    (Glue Sync)          │
-                └───────────┬─────────────┘
-                            │
-                            ▼
-                ┌─────────────────────────┐
-                │ 5. CheckCuratedReady    │  ← Check for curated_schema.json
-                │    (Lambda)             │
-                └───────────┬─────────────┘
-                            │
-                     ┌──────┴──────┐
-                     │             │
-                     ▼             ▼
-         [No Curated Schema] [Schema Exists]
-                     │             │
-                     ▼             ▼
-        ┌────────────────────┐  ┌─────────────────────────┐
-        │SuccessStandardized │  │ 6. RunCurated           │
-        │      Only          │  │    (Glue Sync)          │
-        └────────────────────┘  └───────────┬─────────────┘
-                                            │
-                                            ▼
-                                ┌─────────────────────────┐
-                                │ 7. SuccessFull          │
-                                └─────────────────────────┘
-```
-
-### State Machine States
-
-| State | Type | Purpose |
-|-------|------|---------|
-| `CheckSchemaExists` | Lambda | Verify `schemas/{topic}.json` exists in S3 |
-| `SchemaGate` | Choice | Route based on schema existence |
-| `SkipNoSchema` | Pass | End gracefully if no schema (data buffers in RAW) |
-| `EnsureStandardizedTable` | Lambda | Create/verify Standardized table DDL |
-| `RunStandardized` | Glue Sync | Execute RAW → Standardized processing |
-| `CheckCuratedReady` | Lambda | Verify `curated_schema.json` exists |
-| `CuratedSchemaChoice` | Choice | Route to Curated or end |
-| `RunCurated` | Glue Sync | Execute Standardized → Curated processing |
-| `HandleError` | SNS | Alert on failures |
-
----
-
-## Error Handling
-
-### Error Tables
-
-| Table | Zone | Purpose |
-|-------|------|---------|
-| `iceberg_standardized_db.parse_errors` | Standardized | Invalid JSON records |
-| `iceberg_curated_db.errors` | Curated | CDE validation failures |
-| `iceberg_raw_db.dlq_errors` | RAW | DLQ-drained messages |
-
-### Error Routing Flow
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        ERROR ROUTING                            │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  RAW → Standardized                                             │
-│    ├── Valid JSON ───────────────────────► Standardized Table   │
-│    └── Invalid JSON ─────────────────────► parse_errors Table   │
-│                                                                 │
-│  Standardized → Curated                                         │
-│    ├── CDE Valid ────────────────────────► Curated Table        │
-│    └── CDE Violation ────────────────────► errors Table         │
-│                                                                 │
-│  SQS Lambda                                                     │
-│    ├── Success ──────────────────────────► Firehose → RAW       │
-│    └── Failure (5 retries) ──────────────► DLQ                  │
-│          └── DLQ Drainer ────────────────► dlq_errors Table     │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Accountability Formula
-
-**Full Pipeline Accountability** (end-to-end):
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     FULL ACCOUNTABILITY                                 │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  SQS Messages Received                                                  │
-│    ├── Lambda Success ────────────► Firehose                            │
-│    │     ├── Firehose Success ───► RAW Table                            │
-│    │     └── Firehose Error ─────► Firehose Error Bucket (*)            │
-│    └── Lambda Failure (5x) ──────► DLQ ─► dlq_errors Table              │
-│                                                                         │
-│  RAW Records                                                            │
-│    ├── Valid JSON ───────────────► Standardized Table                   │
-│    └── Invalid JSON ─────────────► parse_errors Table                   │
-│                                                                         │
-│  Standardized Records                                                   │
-│    ├── CDE Valid ────────────────► Curated Table                        │
-│    └── CDE Violation ────────────► cde_errors Table                     │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-
-(*) Firehose errors land in S3 error prefix, not currently tracked in table
-```
-
-**Pre-RAW Accountability** (ingestion layer):
-```
-Pre_RAW_Accountability % = (RAW + DLQ_Errors + Firehose_Errors) / SQS_Messages × 100
-```
-
-**Post-RAW Accountability** (processing layer):
-```
-Post_RAW_Accountability % = (Standardized + Parse_Errors) / RAW × 100
-```
-
-**Curated Accountability**:
-```
-Curated_Accountability % = (Curated + CDE_Errors) / Standardized × 100
-```
-
-> ⚠️ **Current Implementation**: Only tracks Post-RAW accountability. Pre-RAW tracking (SQS metrics, Firehose errors) is on the roadmap.
-
-**Target**: 100% accountability at each layer
-
----
-
-## Schema Management
-
-### Schema Files
-
-| File | Location | Purpose |
-|------|----------|---------|
-| `schemas/events.json` | S3 + Git | Standardized layer schema (table structure) |
-| `schemas/curated_schema.json` | S3 + Git | Curated layer schema (types, CDEs) |
-
-### Schema Deployment
-
-**Important**: Schema = "Topic is onboarded and ready for processing"
-
-```bash
-# Deploy schemas (enables processing)
-./tests/e2e/production_emulation.sh schema
-
-# This uploads:
-# - schemas/events.json → s3://bucket/schemas/events.json
-# - schemas/curated_schema.json → s3://bucket/schemas/curated_schema.json
-```
-
-### Schema Gate Behavior
-
-| Scenario | Schema in S3? | Behavior |
-|----------|---------------|----------|
-| Day 1 (New Topic) | No | Data lands in RAW, processing skipped |
-| Day 2 (Onboarded) | Yes | Full processing RAW → Standardized → Curated |
-
----
-
-## Operational Runbook
-
-### Deploy Infrastructure
-
-```bash
-cd lean-ops
-./scripts/run_tests.sh deploy
-```
-
-### Deploy Schema (Enable Processing)
-
-```bash
-./tests/e2e/production_emulation.sh schema
-```
-
-### Run Full E2E Test
-
-```bash
-./tests/e2e/production_emulation.sh full
-```
-
-### Monitor Step Function
-
-```bash
-# Check execution
-AWS_PROFILE=terraform-firehose aws stepfunctions describe-execution \
-  --execution-arn <execution-arn> --region us-east-1
-
-# View CloudWatch logs
-AWS_PROFILE=terraform-firehose aws logs tail /aws-glue/jobs/output --follow
-```
-
-### Check Data Accountability
-
-```bash
-./tests/e2e/production_emulation.sh verify
-```
-
-### Destroy Infrastructure
-
-```bash
-./scripts/run_tests.sh destroy
-```
-
----
-
-## Roadmap
-
-### ✅ Completed
-
-- [x] RAW → Standardized → Curated pipeline
-- [x] Schema-gated processing
-- [x] FIFO/LIFO deduplication
-- [x] CDE validation
-- [x] Schema evolution (new columns)
-- [x] Error routing (parse_errors, cde_errors)
-- [x] E2E test framework
-- [x] **Snapshot-Based Incremental Reads** - RAW→Standardized uses Iceberg snapshots. DynamoDB stores `last_snapshot_id`.
-
-### 🔧 In Progress
-
-- [ ] Unified error dashboard view
-- [ ] Data quality metrics tracking
-
-### 📋 Backlog (Not Implemented)
-
-| Feature | Priority | Notes |
+| Problem | Solution | Layer |
 |---------|----------|-------|
-| **Negative Test Cases** | High | `error_injection` config not implemented in data_injector |
-| DLQ retry mechanism | Medium | Currently drains to table, no retry |
-| Job failure alerting | Medium | SNS wired, needs tuning |
-| Malformed timestamp testing | Low | Need test data |
-| Performance benchmarks | Low | Need baseline metrics |
+| Lambda retried and sent the same message twice | Keep the **first** one (FIFO) | Standardized |
+| App sent a correction ("amount was wrong, here's the fix") | Keep the **latest** one (LIFO) | Curated |
 
 ---
 
-## Appendix
+## What Is a "Schema Gate"?
 
-### Key File Locations
+Before processing runs, we check if a schema file exists in S3:
 
-| File | Purpose |
-|------|---------|
-| `scripts/glue/standardized_processor.py` | RAW → Standardized Glue job |
-| `scripts/glue/curated_processor.py` | Standardized → Curated Glue job |
-| `modules/orchestration/main.tf` | Step Function definition |
-| `modules/catalog/main.tf` | Iceberg table DDL |
-| `schemas/events.json` | Standardized schema |
-| `schemas/curated_schema.json` | Curated schema (CDEs, types) |
-| `tests/e2e/production_emulation.sh` | E2E test runner |
+- **No schema?** → Skip this topic. It's not ready.
+- **Schema exists?** → Process it.
 
-### DynamoDB Checkpoint Table
-
-**Current Schema** (Timestamp-based):
-```
-Table: lean-ops-dev-checkpoints
-
-| pipeline_id | checkpoint_type | last_ingestion_ts | updated_at |
-|-------------|-----------------|-------------------|------------|
-| standardization_events | standardized | 1768875000 | 2026-01-19 |
-| curated_events | curated | 1768875000 | 2026-01-19 |
-```
-
-**Target Schema** (Snapshot-based for RAW→Standardized):
-```
-Table: lean-ops-dev-checkpoints
-
-| pipeline_id | checkpoint_type | last_snapshot_id | last_ingestion_ts | updated_at |
-|-------------|-----------------|------------------|-------------------|------------|
-| standardization_events | standardized | 8234567890123 | 1768875000 | 2026-01-19 |
-| curated_events | curated | NULL | 1768875000 | 2026-01-19 |
-```
-
-> **Note**: `last_snapshot_id` used for append-only tables (RAW). `last_ingestion_ts` used for MERGE tables (Curated).
+This lets you onboard new topics safely. Just drop a `{topic}.json` file when ready.
 
 ---
 
-*For questions, contact the platform team.*
+## Where Do Errors Go?
+
+| What Went Wrong | Where It Goes | How to Find It |
+|-----------------|---------------|----------------|
+| Lambda crashed | SQS Dead Letter Queue → `iceberg_raw_db.dlq_errors` | Query the table |
+| JSON was malformed (empty, cut off) | `iceberg_standardized_db.parse_errors` | Query the table |
+| Required field was missing | `iceberg_curated_db.errors` | Query the table |
+| Firehose couldn't write | S3 `firehose-errors/` prefix | Check S3 bucket |
+
+---
+
+## How Do I Deploy?
+
+### Prerequisites
+- AWS CLI configured with profile `terraform-firehose`
+- Terraform installed
+
+### Commands
+
+```bash
+# 1. Build Lambda packages
+./scripts/build_lambdas.sh
+
+# 2. Build Glue package
+./scripts/build_glue.sh
+
+# 3. Deploy infrastructure
+AWS_PROFILE=terraform-firehose terraform apply -var-file="environments/dev.tfvars"
+
+# 4. Upload schema (this "opens the gate")
+./tests/e2e/production_emulation.sh schema
+
+# 5. Run a test
+./tests/e2e/production_emulation.sh full
+
+# 6. Tear down when done
+AWS_PROFILE=terraform-firehose terraform destroy -var-file="environments/dev.tfvars"
+```
+
+---
+
+## Where Is Everything?
+
+| What | File Location |
+|------|---------------|
+| SQS Processor Lambda | `modules/compute/lambda/sqs_processor/handler.py` |
+| Firehose Transform Lambda | `modules/compute/lambda/firehose_transform/handler.py` |
+| Standardized Glue Job | `scripts/glue/standardized_processor.py` |
+| Curated Glue Job | `scripts/glue/curated_processor.py` |
+| Step Functions (orchestration) | `modules/orchestration/main.tf` |
+| Table definitions | `modules/catalog/main.tf` |
+| Schema files | `schemas/events.json`, `schemas/curated_schema.json` |
+
+---
+
+## FAQ
+
+**Q: How often does processing run?**  
+A: Every 15 minutes (EventBridge triggers Step Functions).
+
+**Q: What if a Glue job fails?**  
+A: Step Functions sends an SNS alert. The next run will retry from where it left off (checkpointed in DynamoDB).
+
+**Q: Can I add a new topic?**  
+A: Yes. Create the SQS queue, add it to `topics` in Terraform, and drop a schema file in S3.
+
+---
+
+## Not Yet Implemented
+
+| Feature | Status |
+|---------|--------|
+| Drift Log (tracks schema changes) | Table exists, not populated |
+| DLQ retry mechanism | Messages archived, no replay |
+| Semantic Layer | Not built |

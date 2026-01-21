@@ -32,13 +32,13 @@ EKS Pods (700+ topics)
          │
          ▼
 ┌────────────────────────────────────────────────────────────────────┐
-│                    CURATION LAYER (Step Functions)                   │
-│  GetAllCheckpoints → Glue Job → Update Checkpoint                    │
-│  ┌──────────────────┐    ┌──────────────────┐                       │
-│  │ Curated Layer    │    │ Semantic Layer   │                       │
-│  │ (auto-evolving)  │    │ (governed)       │                       │
-│  └──────────────────┘    └──────────────────┘                       │
-└────────────────────────────────────────────────────────────────────┘
+│                    PROCESSING LAYER (Step Functions)                    │
+│  GetAllCheckpoints → Glue Job → Update Checkpoint                        │
+│  ┌──────────────────┐    ┌──────────────────┐                           │
+│  │ Standardized     │    │ Curated Layer    │                           │
+│  │ (dedup/flatten)  │    │ (typed/governed) │                           │
+│  └──────────────────┘    └──────────────────┘                           │
+└────────────────────────────────────────────────────────────────────────┘
          │
          ▼
     Snowflake (External Managed Iceberg Table)
@@ -56,12 +56,13 @@ flowchart LR
 
 ```
 scripts/glue/
-├── curated_processor.py    # Main entry point
-├── requirements.txt        # Dependencies
+├── standardized_processor.py  # RAW → Standardized (FIFO dedup, flatten)
+├── curated_processor.py       # Standardized → Curated (CDE validation, type casting)
+├── requirements.txt           # Dependencies
 └── utils/
-    ├── config.py           # Logging, constants
-    ├── flatten.py          # Deep JSON flattening
-    └── schema_evolution.py # Column addition, alignment
+    ├── config.py              # Logging, constants
+    ├── flatten.py             # Deep JSON flattening
+    └── schema_evolution.py    # Column addition, alignment
 ```
 
 
