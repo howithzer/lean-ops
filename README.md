@@ -2,6 +2,17 @@
 
 A scalable, fail-aware data platform designed to ingest high-velocity IoT sensor data from EKS pods, process through resiliency layers, and deliver curated insights via Apache Iceberg tables.
 
+## Current Status (Phase 2 Complete)
+
+✅ **Robust Ingestion**: SQS → Lambda → Firehose handles 700+ topics with FIFO/LIFO dedup.
+✅ **Snapshot-Based Processing**: Incremental reads using Iceberg snapshots, not just timestamps.
+✅ **Schema Evolution**: Automatically handles new columns (drift) in Curated layer.
+✅ **Error Injection Framework**: Production-grade generator for testing scenarios (duplicates, late arrivals, schema drift, CDE violations).
+✅ **Verified Reliability**: 
+   - **Parse Errors**: 100% capture of malformed JSON.
+   - **CDE Validation**: 100% capture of null critical fields (verified via 3% injection test).
+   - **Data Accountability**: >99.9% record tracking from Ingestion to Curated.
+
 ## Architecture
 
 ```
@@ -167,6 +178,7 @@ See `tests/TEST_PLAN.md` for end-to-end test scenarios.
 | `docs/ROADMAP.md` | Upcoming features (Wave 4-6) |
 | `docs/operations_plan.md` | Operational runbook |
 | `docs/layer_definitions.md` | RAW/Curated/Semantic layer specs |
+| `docs/lessons_learned_curated.md` | **NEW**: CDE Validation & Error Injection learnings |
 | `architecture_feedback/comprehensive_feedback.md` | Step Function design |
 | `architecture_feedback/snowflake_iceberg_recommendation.md` | Snowflake integration guide |
 

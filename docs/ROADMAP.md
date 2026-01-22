@@ -15,13 +15,14 @@
 | 3 | Common Library | ✅ Deployed |
 | 3 | GetAllCheckpoints Lambda | ✅ Ready |
 | 3 | Build Script | ✅ Created |
+| 4 | Step Function Orchestration | ✅ Deployed |
+| 4 | Curated Layer (Glue Job) | ✅ Deployed |
+| 4 | Error Injection Framework | ✅ Deployed |
 
 ### ⏳ Pending
 
 | Wave | Feature | Priority |
 |------|---------|----------|
-| 4 | Step Function Orchestration | High |
-| 4 | Curated Layer (Glue Job) | High |
 | 4 | Semantic Layer (Glue Job) | High |
 | 5 | Snowflake Integration | Medium |
 | 5 | Lake Formation Permissions | Medium |

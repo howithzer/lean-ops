@@ -8,15 +8,19 @@
 
 Think of it like a mail sorting facility:
 
-1. **Mail arrives** (SQS) → **Clerk opens it** (Lambda) → **Puts in truck** (Firehose) → **Warehouse** (RAW)
-2. **Sorter organizes mail** (Standardized Job) → **Inspector checks quality** (Curated Job) → **Ready for delivery** (Athena/Snowflake)
+1. **Mail arrives** (SQS) → **Clerk opens it** (Lambda adds metadata) → **Puts in truck** (Firehose) → **Warehouse** (RAW Layer)
+2. **Sorter organizes mail** (Standardized Job) → **Inspector checks quality** (Curated Job validates CDEs) → **Ready for delivery** (Analysts)
+
+Key capabilities:
+- **Snapshot-based Incrementals**: Reads exact data ranges even with appending data.
+- **Fail-Safe Validation**: Bad data is routed to `errors` tables, never dropped silently.
 
 ---
 
 ## The Journey of Your Data
 
 ```
-Your App → SQS → Lambda → Firehose → RAW Table → Standardized Table → Curated Table → Analysts
+(Data Injector / App) → SQS → Lambda → Firehose → RAW Table → Standardized Table → Curated Table → Analysts
 ```
 
 ### Step-by-Step
@@ -60,8 +64,10 @@ This lets you onboard new topics safely. Just drop a `{topic}.json` file when re
 |-----------------|---------------|----------------|
 | Lambda crashed | SQS Dead Letter Queue → `iceberg_raw_db.dlq_errors` | Query the table |
 | JSON was malformed (empty, cut off) | `iceberg_standardized_db.parse_errors` | Query the table |
-| Required field was missing | `iceberg_curated_db.errors` | Query the table |
+| Required field was missing (**CDE Violation**) | `iceberg_curated_db.errors` | Query the table |
 | Firehose couldn't write | S3 `firehose-errors/` prefix | Check S3 bucket |
+
+> **Testing Note:** You can simulate these errors using the Data Injector (e.g., `cde_violation_percentage` in config).
 
 ---
 

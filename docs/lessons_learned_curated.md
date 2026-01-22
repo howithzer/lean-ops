@@ -227,3 +227,33 @@ spark.sql(f"CALL glue_catalog.system.rewrite_manifests(table => '{CURATED_TABLE}
 5. **Set table properties** for file/manifest optimization
 6. **Attach `AWSGlueServiceRole`** managed policy
 7. **Schedule maintenance** (snapshot expiration, orphan cleanup)
+
+---
+
+## 3. Debugging CDE Validation (The "Zero Errors" Mystery)
+
+### Context
+We enabled error injection (5% empty payloads, 3% CDE violations) but initially saw **0 CDE errors** in the `errors` table, despite correct configuration.
+
+### The 3 Hidden Bugs
+
+#### Bug A: Pydantic Config Structure Mismatch (Silent Failure)
+**Issue:** `day2_mixed_batch.json` had `error_injection` at the top level, but the Pydantic model expected it inside `schema_config`.
+**Result:** Pydantic silently ignored the top-level key and used defaults (`enabled=False`), so valid data was generated instead of errors.
+**Fix:** Moved `error_injection` block inside `schema_config`.
+
+#### Bug B: SQS Processor "Safety" Fallback (Data Loss)
+**Issue:** The Lambda logic tried to be "helpful" by falling back to `message_id` if `idempotency_key` was null.
+```python
+idempotency_key = idempotency_key or message_id  # ❌ Replaced intentional NULLs
+```
+**Result:** NULL values injected by the generator never reached the pipeline; they were "fixed" at ingestion.
+**Fix:** Removed the fallback to allow NULL values to propagate for validation.
+
+#### Bug C: Errors Table Schema Mismatch (Write Failure)
+**Issue:** The validation logic worked (logs showed 1,448 violations detected), but writing to `iceberg_curated_db.errors` failed silently (non-fatal error).
+**Detail:** The code tried to write 7 columns (`message_id`, `raw_record`, etc.), but the table DDL only defined 4.
+**Fix:** Updated `tests/e2e/production_emulation.sh` to add the missing columns to the CREATE TABLE statement.
+
+### Key Lesson
+**"Zero Errors" allows false confidence.** Always verify negative tests by seeing the specific errors count up in the target table. If you inject 3% errors and see 0%, assume the injection failed or the pipeline is masking them, not that the data is "perfect".
