@@ -292,8 +292,11 @@ phase_clean() {
     log_info "Recreating curated errors..."
     run_athena_query "
         CREATE TABLE iceberg_curated_db.errors (
+            message_id STRING,
             idempotency_key STRING,
+            raw_record STRING,
             error_type STRING,
+            error_field STRING,
             error_message STRING,
             processed_ts TIMESTAMP
         )
