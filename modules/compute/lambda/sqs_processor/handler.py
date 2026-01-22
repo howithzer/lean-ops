@@ -117,10 +117,13 @@ def lambda_handler(event, context):
             idempotency_key, period_reference, correlation_id = extract_business_keys(payload)
             
             # Build Firehose record WITH topic_name for routing
+            # NOTE: idempotency_key is NOT defaulted to message_id here.
+            # This allows null values through for CDE validation testing.
+            # The Standardized layer flattening will map _metadata.idempotencyKeyResource → idempotency_key
             firehose_record = {
                 'topic_name': topic_name,  # ← KEY: Used by Firehose Transform for routing
                 'message_id': message_id,
-                'idempotency_key': idempotency_key or message_id,
+                'idempotency_key': idempotency_key,  # Preserve null for CDE testing
                 'period_reference': period_reference,
                 'correlation_id': correlation_id,
                 'publish_time': publish_time,
