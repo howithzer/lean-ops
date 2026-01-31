@@ -386,10 +386,16 @@ def write_to_curated(df, is_first_run: bool):
         insert_vals = ", ".join([f"s.{c}" for c in columns])
         
         # LIFO: Only update if the new record is NEWER than existing
+        # Enhanced: Handle cross-period corrections (±1 month)
         merge_sql = f"""
         MERGE INTO {CURATED_TABLE} t
         USING staged_data s
         ON t.idempotency_key = s.idempotency_key
+           AND (
+               t.period_reference = s.period_reference
+               OR t.period_reference = date_format(add_months(to_date(s.period_reference, 'yyyy-MM'), -1), 'yyyy-MM')
+               OR t.period_reference = date_format(add_months(to_date(s.period_reference, 'yyyy-MM'), 1), 'yyyy-MM')
+           )
         WHEN MATCHED AND s.last_updated_ts > t.last_updated_ts THEN
             UPDATE SET {update_clause}
         WHEN NOT MATCHED THEN

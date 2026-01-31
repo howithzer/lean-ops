@@ -212,6 +212,72 @@ resource "null_resource" "create_topic_tables" {
   depends_on = [aws_glue_catalog_database.raw]
 }
 
+# Add partitioning to RAW staging tables (must be done after table creation)
+resource "null_resource" "partition_topic_tables" {
+  for_each = toset(var.topics)
+
+  triggers = {
+    topic    = each.key
+    database = var.database_name
+    bucket   = var.iceberg_bucket
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    command     = <<-EOT
+      set -e
+      
+      echo "Adding partition field to ${each.key}_staging..."
+      
+      # Partition by day(publish_time) for accountability alignment with GCP Pub/Sub
+      ALTER_SQL="ALTER TABLE ${var.database_name}.${each.key}_staging 
+        ADD IF NOT EXISTS PARTITION FIELD day(to_timestamp(publish_time))"
+      
+      QUERY_ID=$(aws athena start-query-execution \
+        --query-string "$ALTER_SQL" \
+        --work-group "primary" \
+        --result-configuration "OutputLocation=s3://${var.iceberg_bucket}/athena-results/" \
+        --query "QueryExecutionId" \
+        --output text)
+      
+      echo "Athena Query ID: $QUERY_ID"
+      
+      for i in {1..12}; do
+        STATUS=$(aws athena get-query-execution \
+          --query-execution-id "$QUERY_ID" \
+          --query "QueryExecution.Status.State" \
+          --output text)
+        
+        echo "Query status: $STATUS"
+        
+        if [ "$STATUS" = "SUCCEEDED" ]; then
+          echo "Partition added to ${each.key}_staging successfully!"
+          exit 0
+        elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "CANCELLED" ]; then
+          ERROR=$(aws athena get-query-execution \
+            --query-execution-id "$QUERY_ID" \
+            --query "QueryExecution.Status.StateChangeReason" \
+            --output text)
+          echo "Query failed: $ERROR"
+          # Don't fail if partition already exists
+          if echo "$ERROR" | grep -q "Partition already exists"; then
+            echo "Partition already exists, continuing..."
+            exit 0
+          fi
+          exit 1
+        fi
+        
+        sleep 5
+      done
+      
+      echo "Timeout waiting for Athena query"
+      exit 1
+    EOT
+  }
+
+  depends_on = [null_resource.create_topic_tables]
+}
+
 # =============================================================================
 # STANDARDIZED LAYER - Database and Table
 # =============================================================================
@@ -294,6 +360,105 @@ resource "null_resource" "create_standardized_table" {
   }
 
   depends_on = [aws_glue_catalog_database.standardized]
+}
+
+# Add composite partitioning to Standardized table
+resource "null_resource" "partition_standardized_table" {
+  triggers = {
+    database = aws_glue_catalog_database.standardized.name
+    bucket   = var.iceberg_bucket
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    command     = <<-EOT
+      set -e
+      
+      echo "Adding composite partitioning to Standardized table..."
+      
+      # Partition 1: period_reference (for period-end reconciliation)
+      ALTER_SQL_1="ALTER TABLE iceberg_standardized_db.events 
+        ADD IF NOT EXISTS PARTITION FIELD period_reference"
+      
+      QUERY_ID=$(aws athena start-query-execution \
+        --query-string "$ALTER_SQL_1" \
+        --work-group "primary" \
+        --result-configuration "OutputLocation=s3://${var.iceberg_bucket}/athena-results/" \
+        --query "QueryExecutionId" \
+        --output text)
+      
+      echo "Adding period_reference partition... Query ID: $QUERY_ID"
+      
+      for i in {1..12}; do
+        STATUS=$(aws athena get-query-execution \
+          --query-execution-id "$QUERY_ID" \
+          --query "QueryExecution.Status.State" \
+          --output text)
+        
+        if [ "$STATUS" = "SUCCEEDED" ]; then
+          echo "period_reference partition added!"
+          break
+        elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "CANCELLED" ]; then
+          ERROR=$(aws athena get-query-execution \
+            --query-execution-id "$QUERY_ID" \
+            --query "QueryExecution.Status.StateChangeReason" \
+            --output text)
+          if echo "$ERROR" | grep -q "Partition already exists"; then
+            echo "period_reference partition already exists"
+            break
+          fi
+          echo "ERROR: $ERROR"
+          exit 1
+        fi
+        
+        sleep 5
+      done
+      
+      # Partition 2: day(publish_time) (for incremental processing)
+      ALTER_SQL_2="ALTER TABLE iceberg_standardized_db.events 
+        ADD IF NOT EXISTS PARTITION FIELD day(to_timestamp(publish_time))"
+      
+      QUERY_ID=$(aws athena start-query-execution \
+        --query-string "$ALTER_SQL_2" \
+        --work-group "primary" \
+        --result-configuration "OutputLocation=s3://${var.iceberg_bucket}/athena-results/" \
+        --query "QueryExecutionId" \
+        --output text)
+      
+      echo "Adding day(publish_time) partition... Query ID: $QUERY_ID"
+      
+      for i in {1..12}; do
+        STATUS=$(aws athena get-query-execution \
+          --query-execution-id "$QUERY_ID" \
+          --query "QueryExecution.Status.State" \
+          --output text)
+        
+        if [ "$STATUS" = "SUCCEEDED" ]; then
+          echo "day(publish_time) partition added!"
+          echo "Standardized table partitioning complete!"
+          exit 0
+        elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "CANCELLED" ]; then
+          ERROR=$(aws athena get-query-execution \
+            --query-execution-id "$QUERY_ID" \
+            --query "QueryExecution.Status.StateChangeReason" \
+            --output text)
+          if echo "$ERROR" | grep -q "Partition already exists"; then
+            echo "day(publish_time) partition already exists"
+            exit 0
+          fi
+          echo "ERROR: $ERROR"
+          exit 1
+        fi
+        
+        sleep 5
+      done
+      
+      echo "Timeout waiting for Athena query"
+      exit 1
+    EOT
+  }
+
+  depends_on = [null_resource.create_standardized_table]
 }
 
 # Standardized parse_errors table for error handling
@@ -380,6 +545,7 @@ resource "null_resource" "create_curated_events" {
       DDL="CREATE TABLE IF NOT EXISTS iceberg_curated_db.events (
         message_id          STRING,
         idempotency_key     STRING,
+        period_reference    STRING,
         
         application_id      INT,
         event_type          STRING,
@@ -431,6 +597,106 @@ resource "null_resource" "create_curated_events" {
   }
 
   depends_on = [aws_glue_catalog_database.curated]
+}
+
+# Add composite partitioning to Curated events table
+resource "null_resource" "partition_curated_events" {
+  triggers = {
+    database = aws_glue_catalog_database.curated.name
+    bucket   = var.iceberg_bucket
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    command     = <<-EOT
+      set -e
+      
+      echo "Adding composite partitioning to Curated events table..."
+      
+      # Partition 1: period_reference (for period-end reconciliation)
+      ALTER_SQL_1="ALTER TABLE iceberg_curated_db.events 
+        ADD IF NOT EXISTS PARTITION FIELD period_reference"
+      
+      QUERY_ID=$(aws athena start-query-execution \
+        --query-string "$ALTER_SQL_1" \
+        --work-group "primary" \
+        --result-configuration "OutputLocation=s3://${var.iceberg_bucket}/athena-results/" \
+        --query "QueryExecutionId" \
+        --output text)
+      
+      echo "Adding period_reference partition... Query ID: $QUERY_ID"
+      
+      for i in {1..12}; do
+        STATUS=$(aws athena get-query-execution \
+          --query-execution-id "$QUERY_ID" \
+          --query "QueryExecution.Status.State" \
+          --output text)
+        
+        if [ "$STATUS" = "SUCCEEDED" ]; then
+          echo "period_reference partition added!"
+          break
+        elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "CANCELLED" ]; then
+          ERROR=$(aws athena get-query-execution \
+            --query-execution-id "$QUERY_ID" \
+            --query "QueryExecution.Status.StateChangeReason" \
+            --output text)
+          if echo "$ERROR" | grep -q "Partition already exists"; then
+            echo "period_reference partition already exists"
+            break
+          fi
+          echo "ERROR: $ERROR"
+          exit 1
+        fi
+        
+        sleep 5
+      done
+      
+      # Partition 2: day(publish_time) (for incremental processing)
+      # Note: Curated has TIMESTAMP type, so no to_timestamp() needed
+      ALTER_SQL_2="ALTER TABLE iceberg_curated_db.events 
+        ADD IF NOT EXISTS PARTITION FIELD day(publish_time)"
+      
+      QUERY_ID=$(aws athena start-query-execution \
+        --query-string "$ALTER_SQL_2" \
+        --work-group "primary" \
+        --result-configuration "OutputLocation=s3://${var.iceberg_bucket}/athena-results/" \
+        --query "QueryExecutionId" \
+        --output text)
+      
+      echo "Adding day(publish_time) partition... Query ID: $QUERY_ID"
+      
+      for i in {1..12}; do
+        STATUS=$(aws athena get-query-execution \
+          --query-execution-id "$QUERY_ID" \
+          --query "QueryExecution.Status.State" \
+          --output text)
+        
+        if [ "$STATUS" = "SUCCEEDED" ]; then
+          echo "day(publish_time) partition added!"
+          echo "Curated events table partitioning complete!"
+          exit 0
+        elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "CANCELLED" ]; then
+          ERROR=$(aws athena get-query-execution \
+            --query-execution-id "$QUERY_ID" \
+            --query "QueryExecution.Status.StateChangeReason" \
+            --output text)
+          if echo "$ERROR" | grep -q "Partition already exists"; then
+            echo "day(publish_time) partition already exists"
+            exit 0
+          fi
+          echo "ERROR: $ERROR"
+          exit 1
+        fi
+        
+        sleep 5
+      done
+      
+      echo "Timeout waiting for Athena query"
+      exit 1
+    EOT
+  }
+
+  depends_on = [null_resource.create_curated_events]
 }
 
 # Curated errors table (CDE violations, type failures)

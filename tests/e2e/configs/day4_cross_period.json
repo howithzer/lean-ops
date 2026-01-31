@@ -1,0 +1,50 @@
+{
+    "name": "Day 4: Cross-Period Corrections",
+    "description": "Test cross-period late corrections - January transactions corrected in February. Validates MERGE ±1 month lookback.",
+    "run_mode": "local",
+    "log_format": "user",
+    "log_level": "INFO",
+    "sink_type": "sqs",
+    "concurrency": 5,
+    "batch_size": 50,
+    "total_records": 5000,
+    "metrics_interval_seconds": 30,
+    "test_metadata": {
+        "test_id": "cross_period_corrections",
+        "batch_id": "day4",
+        "phase": "day4",
+        "period_reference_override": "2026-02",
+        "test_scenarios": [
+            "cross_period_previous_month",
+            "cross_period_next_month",
+            "same_period_baseline"
+        ]
+    },
+    "schema_config": {
+        "base_schema": "../../Testing_Framework_EEH_2.0/sample-data-generator/schemas/iceberg_raw_events_v2.json",
+        "drift": {
+            "enabled": false
+        },
+        "duplicates": {
+            "enabled": true,
+            "percentage": 0.30,
+            "comment": "30% duplicates to simulate corrections of day1/day2 data"
+        },
+        "error_injection": {
+            "enabled": false
+        },
+        "period_reference_config": {
+            "enabled": true,
+            "comment": "Override period_reference to simulate cross-period corrections",
+            "distribution": {
+                "2026-01": 0.30,
+                "2026-02": 0.60,
+                "2026-03": 0.10
+            }
+        }
+    },
+    "sqs_config": {
+        "target_sqs_url": "https://sqs.us-east-1.amazonaws.com/487500748616/lean-ops-dev-events-queue",
+        "region": "us-east-1"
+    }
+}

@@ -77,8 +77,18 @@ def add_missing_columns_to_table(
         try:
             spark.sql(f"ALTER TABLE {table_name} ADD COLUMNS ({col} STRING)")
             added_cols.append(col)
+            
+            # Log drift to drift_log table
+            log_drift_to_table(
+                spark=spark,
+                column_name=col,
+                action="ADDED",
+                source_layer=table_name.split('.')[-2] if '.' in table_name else "unknown",
+                details=f"Auto-detected new column in data, added as STRING"
+            )
+            
         except Exception as e:
-            # Column may already exist (race condition) - that's OK
+            # Column may already exists (race condition) - that's OK
             if "already exists" in str(e).lower():
                 logger.debug("Column '%s' already exists, skipping", col)
             else:
@@ -88,6 +98,47 @@ def add_missing_columns_to_table(
         logger.info("Schema evolution complete: added %d columns", len(added_cols))
     
     return added_cols
+
+
+def log_drift_to_table(
+    spark: SparkSession,
+    column_name: str,
+    action: str,
+    source_layer: str,
+    details: str = None
+) -> None:
+    """
+    Log schema drift event to iceberg_curated_db.drift_log table.
+    
+    Args:
+        spark: Active SparkSession
+        column_name: Name of the column that changed
+        action: Type of change (ADDED, REMOVED, TYPE_CHANGED)
+        source_layer: Layer where drift detected (standardized, curated)
+        details: Additional information about the change
+    """
+    from datetime import datetime
+    
+    drift_table = "glue_catalog.iceberg_curated_db.drift_log"
+    
+    try:
+        drift_record = spark.createDataFrame([{
+            "detected_ts": datetime.utcnow(),
+            "column_name": column_name,
+            "action": action,
+            "source_layer": source_layer,
+            "old_value": None,
+            "new_value": "STRING",
+            "details": details or f"{action} column '{column_name}'"
+        }])
+        
+        drift_record.writeTo(drift_table).using("iceberg").append()
+        logger.info(f"Logged drift: {action} column '{column_name}' in {source_layer}")
+        
+    except Exception as e:
+        # Don't fail the pipeline if drift logging fails
+        logger.error(f"Failed to log drift (non-fatal): {e}")
+
 
 
 def align_dataframe_to_table(

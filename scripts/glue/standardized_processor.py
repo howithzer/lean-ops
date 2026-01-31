@@ -408,6 +408,11 @@ def main():
             MERGE INTO {STANDARDIZED_TABLE} t
             USING staged_data s
             ON t.idempotency_key = s.idempotency_key
+               AND (
+                   t.period_reference = s.period_reference
+                   OR t.period_reference = date_format(add_months(to_date(s.period_reference, 'yyyy-MM'), -1), 'yyyy-MM')
+                   OR t.period_reference = date_format(add_months(to_date(s.period_reference, 'yyyy-MM'), 1), 'yyyy-MM')
+               )
             WHEN MATCHED AND s.publish_time > t.publish_time THEN
                 UPDATE SET {update_clause}
             WHEN NOT MATCHED THEN

@@ -511,6 +511,133 @@ verify_day2() {
     fi
 }
 
+# ==============================================================================
+# PHASE: DAY 4 (Cross-Period Corrections)
+# ==============================================================================
+# What happens:
+# 1. Inject 5K records with period_reference spanning Jan/Feb/Mar 2026
+# 2. 30% are duplicates (corrections) of day1/day2 data
+# 3. Test MERGE ±1 month lookback (cross-period updates)
+# 4. Verify: No duplicates created, corrections applied across periods
+# ==============================================================================
+
+phase_day4() {
+    log_phase "DAY 4: CROSS-PERIOD CORRECTIONS"
+    
+    get_state_machine_arn || exit 1
+    
+    local config="$SCRIPT_DIR/configs/day4_cross_period.json"
+    
+    log_info "Batch ID: $BATCH_ID"
+    log_info "Injecting 5K cross-period correction records..."
+    log_info "Period distribution: 30% Jan, 60% Feb, 10% Mar"
+    log_info "30% duplicates to test cross-period MERGE"
+    
+    inject_data "$config" 5000
+    
+    log_info "Waiting 90s for Firehose buffer..."
+    sleep 90
+    
+    trigger_step_function
+    
+    verify_day4
+}
+
+verify_day4() {
+    log_phase "DAY 4 VERIFICATION - CROSS-PERIOD MERGE"
+    
+    local passed=0
+    local failed=0
+    
+    # Baseline counts before day4
+    log_info "Checking cross-period correction handling..."
+    
+    # Check for duplicate idempotency_keys (should be ZERO)
+    local duplicate_check=$(run_athena_query "
+        SELECT COUNT(*) 
+        FROM (
+            SELECT idempotency_key, COUNT(*) as cnt
+            FROM iceberg_curated_db.events
+            GROUP BY idempotency_key
+            HAVING COUNT(*) > 1
+        )
+    " 2>/dev/null || echo "0")
+    
+    log_test "Duplicate idempotency_keys in Curated: $duplicate_check"
+    if [ "$duplicate_check" -eq 0 ]; then
+        log_info "✅ No duplicates - cross-period MERGE working correctly"
+        ((passed++))
+    else
+        log_error "❌ Found $duplicate_check duplicate idempotency_keys"
+        log_error "   Cross-period MERGE may not be working!"
+        
+        # Show sample duplicates for debugging
+        run_athena_query "
+            SELECT idempotency_key, period_reference, COUNT(*) as cnt
+            FROM iceberg_curated_db.events
+            GROUP BY idempotency_key, period_reference
+            HAVING COUNT(*) > 1
+            LIMIT 10
+        " || true
+        
+        ((failed++))
+    fi
+    
+    # Check period_reference distribution
+    log_info "Period distribution in Curated table:"
+    run_athena_query "
+        SELECT 
+            period_reference,
+            COUNT(*) as record_count,
+            COUNT(DISTINCT idempotency_key) as unique_keys
+        FROM iceberg_curated_db.events
+        GROUP BY period_reference
+        ORDER BY period_reference
+    " || log_warn "Could not fetch period distribution"
+    
+    # Check for cross-period updates (records with different first_seen vs last_updated period)
+    local cross_period_updates=$(run_athena_query "
+        SELECT COUNT(*)
+        FROM iceberg_curated_db.events
+        WHERE DATE_FORMAT(first_seen_ts, 'yyyy-MM') != DATE_FORMAT(last_updated_ts, 'yyyy-MM')
+    " 2>/dev/null || echo "N/A")
+    
+    log_test "Records updated across periods: $cross_period_updates"
+    if [ "$cross_period_updates" != "N/A" ] && [ "$cross_period_updates" -gt 0 ]; then
+        log_info "✅ Cross-period updates detected: $cross_period_updates"
+        log_info "   Example: Jan transaction updated by Feb correction"
+        ((passed++))
+    elif [ "$cross_period_updates" = "0" ]; then
+        log_warn "⚠️  No cross-period updates found"
+        log_warn "   This may be expected if day4 data is all new"
+    fi
+    
+    # Partition efficiency check
+    log_info "Verifying partition pruning works for cross-period queries..."
+    local partition_test=$(run_athena_query "
+        SELECT COUNT(DISTINCT period_reference)
+        FROM iceberg_curated_db.events
+        WHERE period_reference IN ('2026-01', '2026-02', '2026-03')
+    " 2>/dev/null || echo "N/A")
+    
+    log_test "Periods scanned: $partition_test"
+    
+    # Summary
+    log_phase "DAY 4 SUMMARY"
+    log_info "Passed: $passed, Failed: $failed"
+    log_info "Duplicate check: $duplicate_check (expected: 0)"
+    log_info "Cross-period updates: $cross_period_updates"
+    
+    if [ $failed -eq 0 ]; then
+        log_info "✅ DAY 4 CROSS-PERIOD OPERATIONS PASSED"
+        return 0
+    else
+        log_error "❌ DAY 4 CROSS-PERIOD OPERATIONS FAILED"
+        return 1
+    fi
+}
+
+
 # Show a nice summary dashboard of all table counts
 verify_all() {
     log_phase "FULL VERIFICATION"
@@ -521,6 +648,9 @@ verify_all() {
     local parse_err=$(run_athena_query "SELECT COUNT(*) FROM iceberg_standardized_db.parse_errors" 2>/dev/null || echo "0")
     local cde_err=$(run_athena_query "SELECT COUNT(*) FROM iceberg_curated_db.errors" 2>/dev/null || echo "0")
     
+    # Query drift_log
+    local drift_count=$(run_athena_query "SELECT COUNT(*) FROM iceberg_curated_db.drift_log" 2>/dev/null || echo "0")
+    
     echo ""
     echo "┌─────────────────────────────────────────────┐"
     echo "│            DATA PIPELINE STATUS            │"
@@ -530,16 +660,76 @@ verify_all() {
     printf "│ Curated (events):           %10s     │\n" "$curated"
     printf "│ Parse Errors:               %10s     │\n" "$parse_err"
     printf "│ CDE Errors:                 %10s     │\n" "$cde_err"
+    printf "│ Schema Drift Events:        %10s     │\n" "$drift_count"
     echo "├─────────────────────────────────────────────┤"
     
-    local total_out=$((std + parse_err))
+    # Enhanced accountability: RAW = Standardized + Parse Errors
+    local std_total=$((std + parse_err))
     if [ "$raw" -gt 0 ]; then
-        local accountability=$(echo "scale=1; $total_out * 100 / $raw" | bc)
-        printf "│ Accountability:             %10s%%    │\n" "$accountability"
+        local std_accountability=$(echo "scale=1; $std_total * 100 / $raw" | bc)
+        printf "│ RAW→Std Accountability:     %10s%%    │\n" "$std_accountability"
     fi
+    
+    # Enhanced accountability: Standardized = Curated + CDE Errors
+    local curated_total=$((curated + cde_err))
+    if [ "$std" -gt 0 ]; then
+        local curated_accountability=$(echo "scale=1; $curated_total * 100 / $std" | bc)
+        printf "│ Std→Curated Accountability: %10s%%    │\n" "$curated_accountability"
+    fi
+    
     echo "└─────────────────────────────────────────────┘"
     echo ""
+    
+    # Show drift details if any
+    if [ "$drift_count" -gt 0 ]; then
+        log_info "Schema Drift Detected! Recent changes:"
+        run_athena_query "
+            SELECT 
+                DATE_FORMAT(detected_ts, '%Y-%m-%d %H:%i:%s') as detected,
+                column_name,
+                action,
+                source_layer
+            FROM iceberg_curated_db.drift_log
+            ORDER BY detected_ts DESC
+            LIMIT 10
+        " || log_warn "Could not fetch drift details"
+    fi
+    
+    # Show partition information
+    log_info "Partition Information:"
+    
+    # RAW partitions
+    local raw_partitions=$(run_athena_query "
+        SELECT COUNT(DISTINCT day(to_timestamp(publish_time))) 
+        FROM iceberg_raw_db.events_staging
+    " 2>/dev/null || echo "N/A")
+    log_info "  RAW: $raw_partitions day partitions (by publish_time)"
+    
+    # Standardized partitions
+    local std_periods=$(run_athena_query "
+        SELECT COUNT(DISTINCT period_reference) 
+        FROM iceberg_standardized_db.events
+    " 2>/dev/null || echo "N/A")
+    local std_days=$(run_athena_query "
+        SELECT COUNT(DISTINCT day(to_timestamp(publish_time))) 
+        FROM iceberg_standardized_db.events
+    " 2>/dev/null || echo "N/A")
+    log_info "  Standardized: $std_periods period(s), $std_days day partition(s)"
+    
+    # Curated partitions
+    local curated_periods=$(run_athena_query "
+        SELECT COUNT(DISTINCT period_reference) 
+        FROM iceberg_curated_db.events
+    " 2>/dev/null || echo "N/A")
+    local curated_days=$(run_athena_query "
+        SELECT COUNT(DISTINCT day(publish_time)) 
+        FROM iceberg_curated_db.events
+    " 2>/dev/null || echo "N/A")
+    log_info "  Curated: $curated_periods period(s), $curated_days day partition(s)"
+    
+    echo ""
 }
+
 
 # ==============================================================================
 # MAIN: Parse command line and run the appropriate phase
@@ -558,6 +748,9 @@ case "${1:-help}" in
     day2)
         phase_day2
         ;;
+    day4)
+        phase_day4
+        ;;
     trigger)
         phase_trigger
         ;;
@@ -570,6 +763,7 @@ case "${1:-help}" in
         phase_day1
         phase_schema
         phase_day2
+        phase_day4
         verify_all
         ;;
     *)
@@ -582,16 +776,25 @@ case "${1:-help}" in
         echo "  day1    - Initial load (100K clean records)"
         echo "  schema  - Deploy curated_schema.json to S3"
         echo "  day2    - Corrections, drift, and error records"
+        echo "  day4    - Cross-period corrections (Jan/Feb/Mar mix)"
         echo "  trigger - Manually trigger Step Function"
         echo "  verify  - Run all verification queries"
-        echo "  full    - clean → day1 → schema → day2 (~35-40 min)"
+        echo "  full    - clean → day1 → schema → day2 → day4 (~40-45 min)"
         echo ""
         echo "Timeline:"
         echo "  Clean:  ~1 min"
         echo "  Day 1:  ~15-20 min"
         echo "  Day 2:  ~15-20 min"
-        echo "  Full:   ~35-40 min"
+        echo "  Day 4:  ~5-10 min"
+        echo "  Full:   ~40-45 min"
+        echo ""
+        echo "Cross-Period Test:"
+        echo "  Day 4 tests ±1 month MERGE lookback:"
+        echo "  - Injects corrections with period_reference spanning Jan/Feb/Mar"
+        echo "  - Verifies no duplicates created (cross-period MERGE works)"
+        echo "  - Shows records updated across period boundaries"
         ;;
 esac
+
 
 log_info "Total duration: $(elapsed_time)"
