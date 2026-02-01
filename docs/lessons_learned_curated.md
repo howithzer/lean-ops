@@ -74,12 +74,25 @@ TBLPROPERTIES (
 );
 ```
 
-> **Note:** Athena does NOT support composite partitioning in CREATE TABLE. 
-> Add partitioning after table creation:
+> **CRITICAL:** Athena partitioning for Iceberg works ONLY at table creation time!
+>
+> ✅ **Works** (define partitions in CREATE TABLE):
 > ```sql
-> ALTER TABLE iceberg_curated_db.events ADD PARTITION FIELD period_reference;
-> ALTER TABLE iceberg_curated_db.events ADD PARTITION FIELD day(publish_time);
+> CREATE TABLE events (...) 
+> PARTITIONED BY (period_reference, day(publish_time))
 > ```
+>
+> ❌ **Fails** (add partitions after creation):
+> ```sql
+> ALTER TABLE events ADD PARTITION FIELD period_reference  -- Error!
+> ```
+>
+> ✅ **Alternative** (use Spark SQL in Glue jobs):
+> ```python
+> spark.sql("ALTER TABLE glue_catalog.db.events ADD PARTITION FIELD period_reference")
+> ```
+>
+> **Docs**: https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg-creating-tables.html
 
 ### 3. Glue Job Configuration
 
