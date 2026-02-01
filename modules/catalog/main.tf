@@ -165,11 +165,11 @@ resource "null_resource" "create_topic_tables" {
         idempotency_key   STRING,
         period_reference  STRING,
         correlation_id    STRING,
-        publish_time      STRING,
+        publish_time      TIMESTAMP,
         ingestion_ts      BIGINT,
         json_payload      STRING
       )
-      PARTITIONED BY (day(to_timestamp(publish_time)))
+      PARTITIONED BY (day(publish_time))
       LOCATION 's3://${var.iceberg_bucket}/${var.database_name}/${each.key}_staging/'
       TBLPROPERTIES ('table_type' = 'ICEBERG', 'format' = 'parquet')"
       
