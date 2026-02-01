@@ -119,6 +119,96 @@ def load_schema(bucket: str, key: str) -> dict:
         raise
 
 
+def create_curated_table_from_schema(spark, schema: dict, table_name: str, location: str):
+    """
+    Create Curated table from schema definition if it doesn't exist.
+    
+    This allows schema-driven table creation - the Curated table is only
+    created when the schema file is deployed, not at Terraform time.
+    
+    Args:
+        spark: SparkSession
+        schema: Schema dictionary from S3
+        table_name: Full table name (e.g., glue_catalog.iceberg_curated_db.events)
+        location: S3 location for table data
+    """
+    # Check if table already exists
+    db_name, tbl_name = table_name.split('.')[-2:]
+    if spark.catalog.tableExists(f"{db_name}.{tbl_name}"):
+        logger.info("Table %s already exists, skipping creation", table_name)
+        return
+    
+    logger.info("Creating Curated table %s from schema...", table_name)
+    
+    # Build column definitions from schema
+    column_defs = []
+    for col_name, col_spec in schema.get('columns', {}).items():
+        col_type = col_spec.get('type', 'STRING')
+        # Map schema types to Spark SQL types
+        if col_type.startswith('DECIMAL'):
+            spark_type = col_type  # DECIMAL(10,2)
+        elif col_type == 'INT':
+            spark_type = 'INT'
+        elif col_type == 'BIGINT':
+            spark_type = 'BIGINT'
+        elif col_type == 'DOUBLE':
+            spark_type = 'DOUBLE'
+        elif col_type == 'TIMESTAMP':
+            spark_type = 'TIMESTAMP'
+        else:
+            spark_type = 'STRING'
+        
+        column_defs.append(f"{col_name} {spark_type}")
+    
+    # Add audit columns
+    audit_cols = schema.get('audit_columns', {})
+    for audit_col, spec in audit_cols.items():
+        audit_type = spec.get('type', 'STRING')
+        if audit_type == 'TIMESTAMP':
+            column_defs.append(f"{audit_col} TIMESTAMP")
+        else:
+            column_defs.append(f"{audit_col} STRING")
+    
+    columns_sql = ",\n        ".join(column_defs)
+    
+    # Get partitioning from schema (default to period_reference if not specified)
+    partition_spec = schema.get('partitioning', {})
+    partition_fields = partition_spec.get('fields', ['period_reference', 'day(publish_time)'])
+    
+    # Build CREATE TABLE DDL
+    create_sql = f"""
+    CREATE TABLE IF NOT EXISTS {table_name} (
+        {columns_sql}
+    )
+    USING iceberg
+    LOCATION '{location}'
+    TBLPROPERTIES (
+        'format-version' = '2',
+        'write.format.default' = 'parquet'
+    )
+    """
+    
+    logger.info("Executing DDL to create table...")
+    spark.sql(create_sql)
+    logger.info("✅ Table %s created successfully", table_name)
+    
+    # Add partitioning (Iceberg requires ALTER TABLE for partition spec)
+    for partition_field in partition_fields:
+        try:
+            alter_sql = f"ALTER TABLE {table_name} ADD PARTITION FIELD {partition_field}"
+            logger.info("Adding partition field: %s", partition_field)
+            spark.sql(alter_sql)
+        except Exception as e:
+            # Partition might already exist (e.g., from Terraform or previous run)
+            if "already exists" in str(e).lower() or "already has" in str(e).lower():
+                logger.debug("Partition field %s already exists", partition_field)
+            else:
+                logger.warning("Failed to add partition field %s: %s", partition_field, e)
+    
+    logger.info("✅ Curated table creation complete with partitioning")
+
+
+
 # ==============================================================================
 # CHECKPOINT FUNCTIONS
 # ==============================================================================
@@ -446,6 +536,61 @@ def main():
             raise RuntimeError("Schema missing 'columns' definition")
         logger.info("Schema loaded with %d columns", len(schema.get('columns', {})))
         
+        # Create Curated table from schema if it doesn't exist
+        # This enables schema-driven deployment - table only created when schema is deployed
+        curated_location = f"s3://{ICEBERG_BUCKET}/iceberg_curated_db/events/"
+        create_curated_table_from_schema(spark, schema, CURATED_TABLE, curated_location)
+        
+        # Also ensure errors and drift_log tables exist
+        errors_location = f"s3://{ICEBERG_BUCKET}/iceberg_curated_db/errors/"
+        drift_log_location = f"s3://{ICEBERG_BUCKET}/iceberg_curated_db/drift_log/"
+        
+        # Create errors table (hardcoded schema - doesn't change)
+        if not spark.catalog.tableExists("iceberg_curated_db.errors"):
+            logger.info("Creating Curated errors table...")
+            spark.sql(f"""
+                CREATE TABLE IF NOT EXISTS {ERRORS_TABLE} (
+                    message_id STRING,
+                    idempotency_key STRING,
+                    raw_record STRING COMMENT 'Serialized source record',
+                    error_type STRING COMMENT 'CDE_VIOLATION, TYPE_CAST_ERROR',
+                    error_field STRING COMMENT 'Which field failed validation',
+                    error_message STRING,
+                    processed_ts TIMESTAMP
+                )
+                USING iceberg
+                LOCATION '{errors_location}'
+                TBLPROPERTIES (
+                    'format-version' = '2',
+                    'write.format.default' = 'parquet'
+                )
+            """)
+            logger.info("✅ Errors table created")
+        
+        # Create drift_log table (hardcoded schema)
+        drift_log_table = f"glue_catalog.{CURATED_DATABASE}.drift_log"
+        if not spark.catalog.tableExists("iceberg_curated_db.drift_log"):
+            logger.info("Creating drift_log table...")
+            spark.sql(f"""
+                CREATE TABLE IF NOT EXISTS {drift_log_table} (
+                    detected_ts TIMESTAMP,
+                    column_name STRING,
+                    action STRING COMMENT 'ADDED, REMOVED, TYPE_CHANGED',
+                    source_layer STRING COMMENT 'standardized, curated',
+                    old_value STRING,
+                    new_value STRING,
+                    details STRING
+                )
+                USING iceberg
+                LOCATION '{drift_log_location}'
+                TBLPROPERTIES (
+                    'format-version' = '2',
+                    'write.format.default' = 'parquet'
+                )
+            """)
+            logger.info("✅ drift_log table created")
+        
+
         # ===== STAGE 2: CHECKPOINT =====
         # Get our bookmark (last processed timestamp)
         current_stage = "CHECKPOINT"

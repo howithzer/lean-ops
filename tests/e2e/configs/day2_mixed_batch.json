@@ -7,7 +7,7 @@
     "sink_type": "sqs",
     "concurrency": 10,
     "batch_size": 100,
-    "total_records": 50000,
+    "total_records": 500000,
     "metrics_interval_seconds": 30,
     "test_metadata": {
         "test_id": "day2_mixed",

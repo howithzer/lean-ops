@@ -169,7 +169,6 @@ resource "null_resource" "create_topic_tables" {
         ingestion_ts      BIGINT,
         json_payload      STRING
       )
-      PARTITIONED BY (day(to_timestamp(publish_time)))
       LOCATION 's3://${var.iceberg_bucket}/${var.database_name}/${each.key}_staging/'
       TBLPROPERTIES ('table_type' = 'ICEBERG', 'format' = 'parquet')"
       
@@ -213,9 +212,11 @@ resource "null_resource" "create_topic_tables" {
   depends_on = [aws_glue_catalog_database.raw]
 }
 
+# Add partitioning to RAW staging tables (must be done after table creation)
 
-# NOTE: Partitioning is defined in CREATE TABLE using PARTITIONED BY clause
-# Athena supports partitioning AT TABLE CREATION, but not via ALTER TABLE afterwards
+# NOTE: Partitioning for RAW tables is handled by standardized_processor Glue job
+# Athena does NOT support "ALTER TABLE ADD PARTITION FIELD" for Iceberg tables
+# Must use Spark SQL instead (available in Glue jobs)
 
 # =============================================================================
 # STANDARDIZED LAYER - Database and Table
@@ -226,18 +227,177 @@ resource "aws_glue_catalog_database" "standardized" {
   description = "Standardized layer database for ${var.project_name} - flattened, deduplicated, all STRING types"
 }
 
-# ==========================================================================================
-# STANDARDIZED TABLES - Created dynamically by Glue job from schema file
-# ==========================================================================================
-# NOTE: Standardized tables are NOT created by Terraform.
-# They are created by the standardized_processor Glue job when schema file is deployed.
-# This enables schema-driven deployment:
-#   - Day 1: Terraform creates databases only
-#   - Day N: Schema deployed → Glue creates iceberg_standardized_db.{topic} table
-#
-# Table naming: iceberg_standardized_db.{topic_name} (e.g., "events", "orders", "payments")
-# Partitioning: Added by Glue job using Spark SQL (Athena doesn't support this for Iceberg)
-# ==========================================================================================
+# Standardized events table with composite partitioning
+resource "null_resource" "create_standardized_table" {
+  triggers = {
+    database = aws_glue_catalog_database.standardized.name
+    bucket   = var.iceberg_bucket
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    command     = <<-EOT
+      set -e
+      
+      echo "Creating Standardized Iceberg table via Athena DDL..."
+      
+      DDL="CREATE TABLE IF NOT EXISTS iceberg_standardized_db.events (
+        message_id        STRING,
+        idempotency_key   STRING,
+        period_reference  STRING,
+        correlation_id    STRING,
+        publish_time      STRING,
+        ingestion_ts      BIGINT,
+        topic_name        STRING,
+        device_id         STRING,
+        event_type        STRING,
+        event_timestamp   STRING,
+        sensor_reading    STRING,
+        location          STRING,
+        status            STRING,
+        amount            STRING,
+        currency          STRING,
+        user_id           STRING
+      )
+      LOCATION 's3://${var.iceberg_bucket}/iceberg_standardized_db/events/'
+      TBLPROPERTIES ('table_type' = 'ICEBERG', 'format' = 'parquet')"
+      
+      QUERY_ID=$(aws athena start-query-execution \
+        --query-string "$DDL" \
+        --work-group "primary" \
+        --result-configuration "OutputLocation=s3://${var.iceberg_bucket}/athena-results/" \
+        --query "QueryExecutionId" \
+        --output text)
+      
+      echo "Athena Query ID: $QUERY_ID"
+      
+      for i in {1..12}; do
+        STATUS=$(aws athena get-query-execution \
+          --query-execution-id "$QUERY_ID" \
+          --query "QueryExecution.Status.State" \
+          --output text)
+        
+        echo "Query status: $STATUS"
+        
+        if [ "$STATUS" = "SUCCEEDED" ]; then
+          echo "Standardized events table created successfully!"
+          exit 0
+        elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "CANCELLED" ]; then
+          ERROR=$(aws athena get-query-execution \
+            --query-execution-id "$QUERY_ID" \
+            --query "QueryExecution.Status.StateChangeReason" \
+            --output text)
+          echo "Query failed: $ERROR"
+          exit 1
+        fi
+        
+        sleep 5
+      done
+      
+      echo "Timeout waiting for Athena query"
+      exit 1
+    EOT
+  }
+
+  depends_on = [aws_glue_catalog_database.standardized]
+}
+
+# Add composite partitioning to Standardized table
+resource "null_resource" "partition_standardized_table" {
+  triggers = {
+    database = aws_glue_catalog_database.standardized.name
+    bucket   = var.iceberg_bucket
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    command     = <<-EOT
+      set -e
+      
+      echo "Adding composite partitioning to Standardized table..."
+      
+      # Partition 1: period_reference (for period-end reconciliation)
+      ALTER_SQL_1="ALTER TABLE iceberg_standardized_db.events ADD PARTITION FIELD period_reference"
+      
+      QUERY_ID=$(aws athena start-query-execution \
+        --query-string "$ALTER_SQL_1" \
+        --work-group "primary" \
+        --result-configuration "OutputLocation=s3://${var.iceberg_bucket}/athena-results/" \
+        --query "QueryExecutionId" \
+        --output text)
+      
+      echo "Adding period_reference partition... Query ID: $QUERY_ID"
+      
+      for i in {1..12}; do
+        STATUS=$(aws athena get-query-execution \
+          --query-execution-id "$QUERY_ID" \
+          --query "QueryExecution.Status.State" \
+          --output text)
+        
+        if [ "$STATUS" = "SUCCEEDED" ]; then
+          echo "period_reference partition added!"
+          break
+        elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "CANCELLED" ]; then
+          ERROR=$(aws athena get-query-execution \
+            --query-execution-id "$QUERY_ID" \
+            --query "QueryExecution.Status.StateChangeReason" \
+            --output text)
+          if echo "$ERROR" | grep -q "Partition already exists"; then
+            echo "period_reference partition already exists"
+            break
+          fi
+          echo "ERROR: $ERROR"
+          exit 1
+        fi
+        
+        sleep 5
+      done
+      
+      # Partition 2: day(publish_time) (for incremental processing)
+      ALTER_SQL_2="ALTER TABLE iceberg_standardized_db.events ADD PARTITION FIELD day(to_timestamp(publish_time))"
+      
+      QUERY_ID=$(aws athena start-query-execution \
+        --query-string "$ALTER_SQL_2" \
+        --work-group "primary" \
+        --result-configuration "OutputLocation=s3://${var.iceberg_bucket}/athena-results/" \
+        --query "QueryExecutionId" \
+        --output text)
+      
+      echo "Adding day(publish_time) partition... Query ID: $QUERY_ID"
+      
+      for i in {1..12}; do
+        STATUS=$(aws athena get-query-execution \
+          --query-execution-id "$QUERY_ID" \
+          --query "QueryExecution.Status.State" \
+          --output text)
+        
+        if [ "$STATUS" = "SUCCEEDED" ]; then
+          echo "day(publish_time) partition added!"
+          echo "Standardized table partitioning complete!"
+          exit 0
+        elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "CANCELLED" ]; then
+          ERROR=$(aws athena get-query-execution \
+            --query-execution-id "$QUERY_ID" \
+            --query "QueryExecution.Status.StateChangeReason" \
+            --output text)
+          if echo "$ERROR" | grep -q "Partition already exists"; then
+            echo "day(publish_time) partition already exists"
+            exit 0
+          fi
+          echo "ERROR: $ERROR"
+          exit 1
+        fi
+        
+        sleep 5
+      done
+      
+      echo "Timeout waiting for Athena query"
+      exit 1
+    EOT
+  }
+
+  depends_on = [null_resource.create_standardized_table]
+}
 
 # Standardized parse_errors table for error handling
 resource "null_resource" "create_standardized_parse_errors" {
@@ -347,5 +507,10 @@ output "default_table_created" {
 output "topic_tables_created" {
   description = "Map of topic table creation IDs"
   value       = { for k, v in null_resource.create_topic_tables : k => v.id }
+}
+
+output "standardized_table_created" {
+  description = "Indicates Standardized events table was created"
+  value       = null_resource.create_standardized_table.id
 }
 
