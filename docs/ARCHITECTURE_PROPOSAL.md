@@ -168,7 +168,7 @@ flowchart TB
 | Layer | Purpose | Schema | Deduplication | Consumers |
 |-------|---------|--------|---------------|-----------|
 | **RAW** | Immutable audit trail | None (JSON blob) | ❌ | Compliance, Debugging |
-| **Standardized** | Exploratory analysis | Auto-evolving (ALL STRING) | ✅ FIFO (message_id) | Data Scientists |
+| **Standardized** | Exploratory analysis | Auto-evolving (ALL STRING) | ✅ Two-stage: FIFO + LIFO | Data Scientists |
 | **Curated** | Production analytics | Typed schema | ✅ LIFO (idempotency_key) | BI, ML Models |
 
 #### 3.1.2 Data Flow Sequence
@@ -185,32 +185,27 @@ flowchart TB
 
 #### 3.1.3 Deduplication Strategy (Two-Stage)
 
-**Stage 1: FIFO (First-In-First-Out)** - Remove network retries
+**Stage 1: FIFO (First-In-First-Out)** - Remove network retries (in Standardized Layer)
 
 ```sql
--- Standardized Layer
-ROW_NUMBER() OVER (PARTITION BY message_id ORDER BY publish_time ASC) = 1
+-- Standardized Layer (Stage 1)
+ROW_NUMBER() OVER (PARTITION BY message_id ORDER BY ingestion_ts ASC) = 1
 ```
 
 Keeps: First occurrence of `message_id` (network duplicates discarded)
 
-**Stage 2: LIFO (Last-In-First-Out)** - Apply business corrections
+**Stage 2: LIFO (Last-In-First-Out)** - Apply business corrections (in Standardized Layer)
 
 ```sql
--- Curated Layer (with cross-period enhancement)
-MERGE INTO curated_table t
-USING staged_data s
-ON t.idempotency_key = s.idempotency_key
-   AND (
-       t.period_reference = s.period_reference           -- Current period
-       OR t.period_reference = add_months(s.period_reference, -1)  -- Previous
-       OR t.period_reference = add_months(s.period_reference, 1)   -- Next
-   )
-WHEN MATCHED AND s.last_updated_ts > t.last_updated_ts THEN UPDATE
-WHEN NOT MATCHED THEN INSERT
+-- Standardized Layer (Stage 2)
+ROW_NUMBER() OVER (PARTITION BY idempotency_key ORDER BY last_updated_ts DESC) = 1
 ```
 
-Keeps: Latest occurrence of `idempotency_key` (corrections applied)
+Keeps: Latest occurrence of `idempotency_key` within the batch.
+
+**Cross-Period Updates** (Curated Layer)
+
+Curated layer performs MERGE to apply these updates to the target table, checking adjacent periods.
 
 ---
 

@@ -206,35 +206,74 @@ def update_checkpoint(topic_name: str, snapshot_id: str, max_ingestion_ts: int) 
 # (FIFO = First In, First Out)
 # ==============================================================================
 
-def dedup_stage1_fifo(df):
+def dedup_two_stage(df):
     """
-    Remove duplicate messages by keeping the FIRST occurrence.
+    Two-stage deduplication:
+    1. FIFO: Remove network duplicates (same message_id)
+    2. LIFO: Keep latest business version (same idempotency_key)
     
     How it works:
-    1. Group by message_id
-    2. Sort by ingestion_ts (oldest first)
-    3. Keep only row #1 in each group
+    - Stage 1: Group by message_id, keep first ingestion_ts (removes retries)
+    - Stage 2: Group by idempotency_key, keep latest last_updated_ts (business correction)
     
-    Example:
-        Input:  [msg1 at 10:00, msg1 at 10:01, msg2 at 10:02]
-        Output: [msg1 at 10:00, msg2 at 10:02]  (second msg1 removed)
+    Returns:
+        DataFrame with 1 row per idempotency_key (best version)
     """
-    # Create a window: partition by message_id, order by time (oldest first)
-    window = Window.partitionBy("message_id").orderBy(F.col("ingestion_ts").asc())
+    logger.info("Starting two-stage deduplication...")
     
-    # Add row numbers within each group
-    df_with_rn = df.withColumn("rn", F.row_number().over(window))
+    # --- STAGE 1: FIFO (Network Dedup) ---
+    # Group by message_id, keep first arrival
+    window_fifo = Window.partitionBy("message_id").orderBy(F.col("ingestion_ts").asc())
     
-    # Keep only row 1 (the first occurrence)
-    df_deduped = df_with_rn.filter(F.col("rn") == 1).drop("rn")
+    df_fifo = df.withColumn("rn", F.row_number().over(window_fifo)) \
+                .filter(F.col("rn") == 1) \
+                .drop("rn")
     
-    # Log how many duplicates we removed
     count_before = df.count()
-    count_after = df_deduped.count()
-    logger.info("Dedup: %d → %d records (%d duplicates removed)", 
-                count_before, count_after, count_before - count_after)
+    count_after_fifo = df_fifo.count()
+    logger.info("Stage 1 (FIFO): %d -> %d records (%d removed)", 
+                count_before, count_after_fifo, count_before - count_after_fifo)
     
-    return df_deduped
+    # --- STAGE 2: LIFO (Business Dedup) ---
+    # Need to extract timestamp from payload to decide which version is newer
+    # If last_updated_ts is missing, fall back to publish_time (which is in envelope)
+    
+    # Helper to clean up temp columns later
+    final_cols = df_fifo.columns
+    
+    # Parse timestamps for sorting
+    df_with_ts = df_fifo.withColumn(
+        "_sort_ts",
+        F.coalesce(
+            # Try last_updated_ts from payload
+            F.get_json_object(F.col("json_payload"), "$.last_updated_ts"),
+            # Fallback to publish_time from envelope
+            F.col("publish_time"),
+            # Last resort: ingestion_ts
+            F.col("ingestion_ts").cast("string")
+        )
+    )
+    
+    # Group by idempotency_key, keep LATEST timestamp
+    window_lifo = Window.partitionBy("idempotency_key").orderBy(F.col("_sort_ts").desc())
+    
+    df_lifo = df_with_ts.withColumn("rn", F.row_number().over(window_lifo)) \
+                        .filter(F.col("rn") == 1) \
+                        .select(*final_cols) # Drop temp columns
+    
+    count_after_lifo = df_lifo.count()
+    
+    # Summary stats
+    network_dupes = count_before - count_after_fifo
+    business_corrections = count_after_fifo - count_after_lifo
+    
+    logger.info("Stage 2 (LIFO): %d -> %d records (%d replaced)", 
+                count_after_fifo, count_after_lifo, business_corrections)
+    
+    logger.info("Dedup Summary: Input=%d, NetDupes=%d, Corrections=%d, Output=%d",
+                count_before, network_dupes, business_corrections, count_after_lifo)
+    
+    return df_lifo
 
 
 # ==============================================================================
@@ -300,7 +339,7 @@ def main():
         # ===== STAGE 3: VALIDATE =====
         # Remove duplicates and check for bad JSON
         current_stage = "VALIDATE"
-        df_deduped = dedup_stage1_fifo(raw_df)
+        df_deduped = dedup_two_stage(raw_df)
         
         # Check if JSON looks valid (starts/ends with {} or [])
         df_checked = df_deduped.withColumn(
@@ -383,45 +422,34 @@ def main():
         
         # ===== STAGE 6: WRITE =====
         # Save to Standardized table using MERGE (upsert)
+        # IMPORTANT: Always use MERGE, even for empty tables
+        # createOrReplace() loses DDL-defined partitioning and table properties
         current_stage = "WRITE"
-        is_first_run = True
-        try:
-            snapshots_df = spark.sql(f"SELECT * FROM {STANDARDIZED_TABLE}.snapshots LIMIT 1")
-            if snapshots_df.count() > 0:
-                is_first_run = False
-        except Exception:
-            pass
-        
-        if is_first_run:
-            logger.info("First run - creating table with initial data")
-            df_aligned.writeTo(STANDARDIZED_TABLE).using("iceberg").createOrReplace()
-            records_written = df_aligned.count()
-        else:
-            # MERGE: Update existing rows or insert new ones
-            df_aligned.createOrReplaceTempView("staged_data")
-            columns = df_aligned.columns
-            update_clause = ", ".join([f"t.{c} = s.{c}" for c in columns if c != 'idempotency_key'])
-            insert_cols = ", ".join(columns)
-            insert_vals = ", ".join([f"s.{c}" for c in columns])
-            
-            merge_sql = f"""
-            MERGE INTO {STANDARDIZED_TABLE} t
-            USING staged_data s
-            ON t.idempotency_key = s.idempotency_key
-               AND (
-                   t.period_reference = s.period_reference
-                   OR t.period_reference = date_format(add_months(to_date(s.period_reference, 'yyyy-MM'), -1), 'yyyy-MM')
-                   OR t.period_reference = date_format(add_months(to_date(s.period_reference, 'yyyy-MM'), 1), 'yyyy-MM')
-               )
-            WHEN MATCHED AND s.publish_time > t.publish_time THEN
-                UPDATE SET {update_clause}
-            WHEN NOT MATCHED THEN
-                INSERT ({insert_cols}) VALUES ({insert_vals})
-            """
-            
-            logger.info("Executing MERGE...")
-            spark.sql(merge_sql)
-            records_written = records_valid
+
+        df_aligned.createOrReplaceTempView("staged_data")
+        columns = df_aligned.columns
+        update_clause = ", ".join([f"t.{c} = s.{c}" for c in columns if c != 'idempotency_key'])
+        insert_cols = ", ".join(columns)
+        insert_vals = ", ".join([f"s.{c}" for c in columns])
+
+        merge_sql = f"""
+        MERGE INTO {STANDARDIZED_TABLE} t
+        USING staged_data s
+        ON t.idempotency_key = s.idempotency_key
+           AND (
+               t.period_reference = s.period_reference
+               OR t.period_reference = date_format(add_months(to_date(s.period_reference, 'yyyy-MM'), -1), 'yyyy-MM')
+               OR t.period_reference = date_format(add_months(to_date(s.period_reference, 'yyyy-MM'), 1), 'yyyy-MM')
+           )
+        WHEN MATCHED AND s.publish_time > t.publish_time THEN
+            UPDATE SET {update_clause}
+        WHEN NOT MATCHED THEN
+            INSERT ({insert_cols}) VALUES ({insert_vals})
+        """
+
+        logger.info("Executing MERGE (works on empty tables too)...")
+        spark.sql(merge_sql)
+        records_written = records_valid
         
         logger.info("Write complete: %d records", records_written)
         

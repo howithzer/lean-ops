@@ -179,7 +179,8 @@ ENVELOPE_COLUMN_VARIANTS: FrozenSet[str] = frozenset({
 
 # Columns that should preserve their original type (not cast to STRING)
 PRESERVE_TYPE_COLUMNS: FrozenSet[str] = frozenset({
-    'ingestion_ts',  # Keep as BIGINT for timestamp ordering
+    'ingestion_ts',   # Keep as BIGINT for timestamp ordering
+    'publish_time',   # Keep as TIMESTAMP for partitioning (day() transform requires TIMESTAMP)
 })
 
 # Legacy constants for backward compatibility (deprecated, use Config instead)

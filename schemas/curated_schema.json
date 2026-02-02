@@ -94,12 +94,30 @@
             "required": false,
             "nullable": true,
             "source": "passthrough"
+        },
+        "period_reference": {
+            "type": "STRING",
+            "cde": false,
+            "required": false,
+            "nullable": true,
+            "source": "passthrough",
+            "description": "Business period for partitioning and cross-period MERGE (YYYY-MM)"
+        },
+        "topic_name": {
+            "type": "STRING",
+            "cde": false,
+            "required": false,
+            "nullable": true,
+            "source": "passthrough",
+            "description": "Source topic name"
         }
     },
     "passthrough_columns": [
         "message_id",
         "publish_time",
-        "ingestion_ts"
+        "ingestion_ts",
+        "period_reference",
+        "topic_name"
     ],
     "audit_columns": {
         "first_seen_ts": {
@@ -122,5 +140,8 @@
     "merge_config": {
         "key_column": "idempotency_key",
         "update_condition": "source.last_updated_ts > target.last_updated_ts"
+    },
+    "partitioning": {
+        "fields": ["period_reference"]
     }
 }

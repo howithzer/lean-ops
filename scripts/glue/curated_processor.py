@@ -170,42 +170,33 @@ def create_curated_table_from_schema(spark, schema: dict, table_name: str, locat
             column_defs.append(f"{audit_col} STRING")
     
     columns_sql = ",\n        ".join(column_defs)
-    
+
     # Get partitioning from schema (default to period_reference if not specified)
     partition_spec = schema.get('partitioning', {})
     partition_fields = partition_spec.get('fields', ['period_reference', 'day(publish_time)'])
-    
-    # Build CREATE TABLE DDL
+
+    # Build PARTITIONED BY clause
+    # For Iceberg, use PARTITIONED BY in CREATE TABLE statement
+    partitioned_by_clause = f"PARTITIONED BY ({', '.join(partition_fields)})" if partition_fields else ""
+
+    # Build CREATE TABLE DDL with partitioning included
     create_sql = f"""
     CREATE TABLE IF NOT EXISTS {table_name} (
         {columns_sql}
     )
     USING iceberg
+    {partitioned_by_clause}
     LOCATION '{location}'
     TBLPROPERTIES (
         'format-version' = '2',
         'write.format.default' = 'parquet'
     )
     """
-    
-    logger.info("Executing DDL to create table...")
+
+    logger.info("Executing DDL to create table with partitioning...")
+    logger.info("Partition fields: %s", partition_fields)
     spark.sql(create_sql)
-    logger.info("✅ Table %s created successfully", table_name)
-    
-    # Add partitioning (Iceberg requires ALTER TABLE for partition spec)
-    for partition_field in partition_fields:
-        try:
-            alter_sql = f"ALTER TABLE {table_name} ADD PARTITION FIELD {partition_field}"
-            logger.info("Adding partition field: %s", partition_field)
-            spark.sql(alter_sql)
-        except Exception as e:
-            # Partition might already exist (e.g., from Terraform or previous run)
-            if "already exists" in str(e).lower() or "already has" in str(e).lower():
-                logger.debug("Partition field %s already exists", partition_field)
-            else:
-                logger.warning("Failed to add partition field %s: %s", partition_field, e)
-    
-    logger.info("✅ Curated table creation complete with partitioning")
+    logger.info("✅ Table %s created successfully with partitions", table_name)
 
 
 
@@ -450,51 +441,48 @@ def add_missing_columns_to_curated(df):
 
 def write_to_curated(df, is_first_run: bool):
     """
-    Write valid records to the Curated table.
-    
-    For first run: Create the table with initial data
-    For subsequent runs: Use MERGE (upsert) to update existing or insert new
+    Write valid records to the Curated table using MERGE.
+
+    IMPORTANT: Always use MERGE, even for empty tables.
+    createOrReplace() loses DDL-defined partitioning and table properties.
+    MERGE works on empty tables when IcebergSparkSessionExtensions is enabled.
     """
     if df.count() == 0:
         logger.info("No valid records to write")
         return
-    
-    if is_first_run:
-        logger.info("First run - creating table with initial data")
-        df.writeTo(CURATED_TABLE).using("iceberg").createOrReplace()
-        logger.info("Initial data loaded successfully")
-    else:
-        # Schema evolution: add any new columns before MERGE
-        add_missing_columns_to_curated(df)
-        
-        # MERGE = "upsert" (update if exists, insert if new)
-        df.createOrReplaceTempView("staged_data")
-        
-        columns = df.columns
-        update_clause = ", ".join([f"t.{c} = s.{c}" for c in columns if c != 'idempotency_key'])
-        insert_cols = ", ".join(columns)
-        insert_vals = ", ".join([f"s.{c}" for c in columns])
-        
-        # LIFO: Only update if the new record is NEWER than existing
-        # Enhanced: Handle cross-period corrections (±1 month)
-        merge_sql = f"""
-        MERGE INTO {CURATED_TABLE} t
-        USING staged_data s
-        ON t.idempotency_key = s.idempotency_key
-           AND (
-               t.period_reference = s.period_reference
-               OR t.period_reference = date_format(add_months(to_date(s.period_reference, 'yyyy-MM'), -1), 'yyyy-MM')
-               OR t.period_reference = date_format(add_months(to_date(s.period_reference, 'yyyy-MM'), 1), 'yyyy-MM')
-           )
-        WHEN MATCHED AND s.last_updated_ts > t.last_updated_ts THEN
-            UPDATE SET {update_clause}
-        WHEN NOT MATCHED THEN
-            INSERT ({insert_cols}) VALUES ({insert_vals})
-        """
-        
-        logger.info("Executing MERGE...")
-        spark.sql(merge_sql)
-        logger.info("MERGE complete")
+
+    # Schema evolution: add any new columns before MERGE
+    add_missing_columns_to_curated(df)
+
+    # MERGE = "upsert" (update if exists, insert if new)
+    # Works on both empty and populated tables
+    df.createOrReplaceTempView("staged_data")
+
+    columns = df.columns
+    update_clause = ", ".join([f"t.{c} = s.{c}" for c in columns if c != 'idempotency_key'])
+    insert_cols = ", ".join(columns)
+    insert_vals = ", ".join([f"s.{c}" for c in columns])
+
+    # LIFO: Only update if the new record is NEWER than existing
+    # Enhanced: Handle cross-period corrections (±1 month)
+    merge_sql = f"""
+    MERGE INTO {CURATED_TABLE} t
+    USING staged_data s
+    ON t.idempotency_key = s.idempotency_key
+       AND (
+           t.period_reference = s.period_reference
+           OR t.period_reference = date_format(add_months(to_date(s.period_reference, 'yyyy-MM'), -1), 'yyyy-MM')
+           OR t.period_reference = date_format(add_months(to_date(s.period_reference, 'yyyy-MM'), 1), 'yyyy-MM')
+       )
+    WHEN MATCHED AND s.last_updated_ts > t.last_updated_ts THEN
+        UPDATE SET {update_clause}
+    WHEN NOT MATCHED THEN
+        INSERT ({insert_cols}) VALUES ({insert_vals})
+    """
+
+    logger.info("Executing MERGE (works on empty tables too)...")
+    spark.sql(merge_sql)
+    logger.info("MERGE complete")
 
 
 # ==============================================================================

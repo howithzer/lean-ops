@@ -226,87 +226,16 @@ phase_clean() {
     
     log_info "Waiting 5s for drops to complete..."
     sleep 5
-    
-    # Recreate tables with minimal schema
-    log_info "Recreating events_staging..."
-    run_athena_query "
-        CREATE TABLE iceberg_raw_db.events_staging (
-            message_id STRING,
-            topic_name STRING,
-            json_payload STRING,
-            ingestion_ts BIGINT
-        )
-        LOCATION 's3://$BUCKET/raw/events_staging/'
-        TBLPROPERTIES (
-            'table_type' = 'ICEBERG',
-            'format' = 'parquet',
-            'write_compression' = 'zstd'
-        )
-    " >/dev/null 2>&1 || log_warn "events_staging may already exist"
-    
-    log_info "Recreating standardized events..."
-    run_athena_query "
-        CREATE TABLE iceberg_standardized_db.events (
-            message_id STRING,
-            idempotency_key STRING,
-            publish_time STRING,
-            ingestion_ts BIGINT,
-            topic_name STRING
-        )
-        LOCATION 's3://$BUCKET/standardized/events/'
-        TBLPROPERTIES (
-            'table_type' = 'ICEBERG',
-            'format' = 'parquet',
-            'write_compression' = 'zstd'
-        )
-    " >/dev/null 2>&1 || log_warn "standardized events may already exist"
-    
-    log_info "Recreating parse_errors..."
-    run_athena_query "
-        CREATE TABLE iceberg_standardized_db.parse_errors (
-            raw_payload STRING,
-            error_type STRING,
-            error_message STRING,
-            processed_ts TIMESTAMP
-        )
-        LOCATION 's3://$BUCKET/standardized/parse_errors/'
-        TBLPROPERTIES (
-            'table_type' = 'ICEBERG',
-            'format' = 'parquet'
-        )
-    " >/dev/null 2>&1 || log_warn "parse_errors may already exist"
-    
-    log_info "Recreating curated events..."
-    run_athena_query "
-        CREATE TABLE iceberg_curated_db.events (
-            idempotency_key STRING
-        )
-        LOCATION 's3://$BUCKET/curated/events/'
-        TBLPROPERTIES (
-            'table_type' = 'ICEBERG',
-            'format' = 'parquet',
-            'write_compression' = 'zstd'
-        )
-    " >/dev/null 2>&1 || log_warn "curated events may already exist"
-    
-    log_info "Recreating curated errors..."
-    run_athena_query "
-        CREATE TABLE iceberg_curated_db.errors (
-            message_id STRING,
-            idempotency_key STRING,
-            raw_record STRING,
-            error_type STRING,
-            error_field STRING,
-            error_message STRING,
-            processed_ts TIMESTAMP
-        )
-        LOCATION 's3://$BUCKET/curated/errors/'
-        TBLPROPERTIES (
-            'table_type' = 'ICEBERG',
-            'format' = 'parquet'
-        )
-    " >/dev/null 2>&1 || log_warn "curated errors may already exist"
-    
+
+    # NOTE: Tables are NOT recreated here!
+    # Let Terraform (RAW), Lambda (Standardized), and Glue (Curated) create them with correct schemas.
+    # This ensures schemas match the actual DDL generation code.
+    log_info "Tables dropped. They will be recreated automatically by:"
+    log_info "  - RAW tables: Already exist from Terraform (or run: terraform apply)"
+    log_info "  - Standardized table: Created by ensure_standardized_table Lambda on first trigger"
+    log_info "  - Curated table: Created by curated_processor Glue job on first run"
+    log_info "  - Error tables: Created by Glue jobs on first run"
+
     # Reset DynamoDB checkpoints
     log_info "Resetting DynamoDB checkpoints..."
     aws dynamodb delete-item \

@@ -90,9 +90,9 @@ resource "null_resource" "create_default_table" {
     interpreter = ["bash", "-c"]
     command     = <<-EOT
       set -e
-      
+
       echo "Creating Iceberg table via Athena DDL..."
-      
+
       DDL="CREATE TABLE IF NOT EXISTS ${var.database_name}.default_staging (
         message_id        STRING,
         topic_name        STRING,
@@ -101,24 +101,24 @@ resource "null_resource" "create_default_table" {
       )
       LOCATION 's3://${var.iceberg_bucket}/${var.database_name}/default_staging/'
       TBLPROPERTIES ('table_type' = 'ICEBERG', 'format' = 'parquet')"
-      
+
       QUERY_ID=$(aws athena start-query-execution \
         --query-string "$DDL" \
         --work-group "primary" \
         --result-configuration "OutputLocation=s3://${var.iceberg_bucket}/athena-results/" \
         --query "QueryExecutionId" \
         --output text)
-      
+
       echo "Athena Query ID: $QUERY_ID"
-      
+
       for i in {1..12}; do
         STATUS=$(aws athena get-query-execution \
           --query-execution-id "$QUERY_ID" \
           --query "QueryExecution.Status.State" \
           --output text)
-        
+
         echo "Query status: $STATUS"
-        
+
         if [ "$STATUS" = "SUCCEEDED" ]; then
           echo "Iceberg table created successfully!"
           exit 0
@@ -130,12 +130,58 @@ resource "null_resource" "create_default_table" {
           echo "Query failed: $ERROR"
           exit 1
         fi
-        
+
         sleep 5
       done
-      
+
       echo "Timeout waiting for Athena query"
       exit 1
+    EOT
+  }
+
+  provisioner "local-exec" {
+    when        = destroy
+    interpreter = ["bash", "-c"]
+    command     = <<-EOT
+      set -e
+
+      echo "Dropping Iceberg table default_staging..."
+
+      DDL="DROP TABLE IF EXISTS ${self.triggers.database}.default_staging"
+
+      QUERY_ID=$(aws athena start-query-execution \
+        --query-string "$DDL" \
+        --work-group "primary" \
+        --result-configuration "OutputLocation=s3://${self.triggers.bucket}/athena-results/" \
+        --query "QueryExecutionId" \
+        --output text 2>/dev/null || echo "")
+
+      if [ -n "$QUERY_ID" ] && [ "$QUERY_ID" != "None" ]; then
+        echo "Athena Query ID: $QUERY_ID"
+
+        for i in {1..12}; do
+          STATUS=$(aws athena get-query-execution \
+            --query-execution-id "$QUERY_ID" \
+            --query "QueryExecution.Status.State" \
+            --output text 2>/dev/null || echo "UNKNOWN")
+
+          echo "Query status: $STATUS"
+
+          if [ "$STATUS" = "SUCCEEDED" ]; then
+            echo "Table default_staging dropped successfully!"
+            exit 0
+          elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "CANCELLED" ]; then
+            echo "Drop table query failed (table may not exist)"
+            exit 0
+          fi
+
+          sleep 5
+        done
+      else
+        echo "No query ID returned, table may not exist"
+      fi
+
+      exit 0
     EOT
   }
 
@@ -147,9 +193,10 @@ resource "null_resource" "create_topic_tables" {
   for_each = toset(var.topics)
 
   triggers = {
-    topic    = each.key
-    database = var.database_name
-    bucket   = var.iceberg_bucket
+    topic       = each.key
+    database    = var.database_name
+    bucket      = var.iceberg_bucket
+    schema_hash = md5("topic_name,message_id,idempotency_key,period_reference,correlation_id,publish_time,ingestion_ts,json_payload")
   }
 
   provisioner "local-exec" {
@@ -207,6 +254,52 @@ resource "null_resource" "create_topic_tables" {
       
       echo "Timeout waiting for Athena query"
       exit 1
+    EOT
+  }
+
+  provisioner "local-exec" {
+    when        = destroy
+    interpreter = ["bash", "-c"]
+    command     = <<-EOT
+      set -e
+
+      echo "Dropping Iceberg table ${self.triggers.topic}_staging..."
+
+      DDL="DROP TABLE IF EXISTS ${self.triggers.database}.${self.triggers.topic}_staging"
+
+      QUERY_ID=$(aws athena start-query-execution \
+        --query-string "$DDL" \
+        --work-group "primary" \
+        --result-configuration "OutputLocation=s3://${self.triggers.bucket}/athena-results/" \
+        --query "QueryExecutionId" \
+        --output text 2>/dev/null || echo "")
+
+      if [ -n "$QUERY_ID" ] && [ "$QUERY_ID" != "None" ]; then
+        echo "Athena Query ID: $QUERY_ID"
+
+        for i in {1..12}; do
+          STATUS=$(aws athena get-query-execution \
+            --query-execution-id "$QUERY_ID" \
+            --query "QueryExecution.Status.State" \
+            --output text 2>/dev/null || echo "UNKNOWN")
+
+          echo "Query status: $STATUS"
+
+          if [ "$STATUS" = "SUCCEEDED" ]; then
+            echo "Table ${self.triggers.topic}_staging dropped successfully!"
+            exit 0
+          elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "CANCELLED" ]; then
+            echo "Drop table query failed (table may not exist)"
+            exit 0
+          fi
+
+          sleep 5
+        done
+      else
+        echo "No query ID returned, table may not exist"
+      fi
+
+      exit 0
     EOT
   }
 
@@ -291,6 +384,52 @@ resource "null_resource" "create_standardized_parse_errors" {
         sleep 5
       done
       exit 1
+    EOT
+  }
+
+  provisioner "local-exec" {
+    when        = destroy
+    interpreter = ["bash", "-c"]
+    command     = <<-EOT
+      set -e
+
+      echo "Dropping Standardized parse_errors table..."
+
+      DDL="DROP TABLE IF EXISTS ${self.triggers.database}.parse_errors"
+
+      QUERY_ID=$(aws athena start-query-execution \
+        --query-string "$DDL" \
+        --work-group "primary" \
+        --result-configuration "OutputLocation=s3://${self.triggers.bucket}/athena-results/" \
+        --query "QueryExecutionId" \
+        --output text 2>/dev/null || echo "")
+
+      if [ -n "$QUERY_ID" ] && [ "$QUERY_ID" != "None" ]; then
+        echo "Athena Query ID: $QUERY_ID"
+
+        for i in {1..12}; do
+          STATUS=$(aws athena get-query-execution \
+            --query-execution-id "$QUERY_ID" \
+            --query "QueryExecution.Status.State" \
+            --output text 2>/dev/null || echo "UNKNOWN")
+
+          echo "Query status: $STATUS"
+
+          if [ "$STATUS" = "SUCCEEDED" ]; then
+            echo "Table parse_errors dropped successfully!"
+            exit 0
+          elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "CANCELLED" ]; then
+            echo "Drop table query failed (table may not exist)"
+            exit 0
+          fi
+
+          sleep 5
+        done
+      else
+        echo "No query ID returned, table may not exist"
+      fi
+
+      exit 0
     EOT
   }
 

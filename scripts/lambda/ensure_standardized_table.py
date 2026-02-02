@@ -66,27 +66,15 @@ def lambda_handler(event, context):
     logger.info(f"Loading schema from s3://{schema_bucket}/{schema_key}")
     schema = load_schema(schema_bucket, schema_key)
     
-    # 3. Generate CREATE TABLE DDL
+    # 3. Generate CREATE TABLE DDL (includes PARTITIONED BY clause)
     create_ddl = generate_create_table_ddl(database, table, schema, iceberg_bucket)
     logger.info(f"Generated DDL:\n{create_ddl}")
-    
+
     execute_athena_query(create_ddl)
-    logger.info(f"Table created: {full_table}")
-    
-    # 4. Add partitioning via ALTER TABLE
-    for partition in schema.get('partitioning', []):
-        field = partition['field']
-        transform = partition.get('transform', 'identity')
-        
-        if transform == 'identity':
-            alter_sql = f"ALTER TABLE {database}.{table} ADD PARTITION FIELD {field}"
-        else:
-            alter_sql = f"ALTER TABLE {database}.{table} ADD PARTITION FIELD {transform}({field})"
-        
-        logger.info(f"Adding partition: {alter_sql}")
-        execute_athena_query(alter_sql)
-    
-    # 5. Set table properties
+    logger.info(f"Table created with partitioning: {full_table}")
+
+    # NOTE: Table properties are set in CREATE TABLE TBLPROPERTIES
+    # Additional properties can be added here if needed
     props = schema.get('table_properties', {})
     if props:
         # Note: Athena has limited SET TBLPROPERTIES support for Iceberg
@@ -121,32 +109,49 @@ def load_schema(bucket: str, key: str) -> dict:
 
 def generate_create_table_ddl(database: str, table: str, schema: dict, iceberg_bucket: str) -> str:
     """
-    Generate CREATE TABLE with proper column types.
+    Generate CREATE TABLE with proper column types and partitioning.
     - Envelope columns: use specified type or STRING
     - Payload columns: ALWAYS STRING for flexibility
+    - Partitioning: included in PARTITIONED BY clause (Athena doesn't support ALTER TABLE ADD PARTITION for Iceberg)
     """
     columns = []
-    
+
     # Envelope columns
     for col_name, col_def in schema.get('envelope_columns', {}).items():
         col_type = col_def.get('type', 'STRING')
         description = col_def.get('description', '').replace("'", "''")
         columns.append(f"  {col_name} {col_type} COMMENT '{description}'")
-    
+
     # Payload columns (ALWAYS STRING for maximum flexibility)
     for col_name, col_def in schema.get('payload_columns', {}).items():
         description = col_def.get('description', '').replace("'", "''")
         columns.append(f"  {col_name} STRING COMMENT '{description}'")
-    
+
     columns_sql = ",\n".join(columns)
-    
+
+    # Build PARTITIONED BY clause from schema
+    partition_fields = []
+    for partition in schema.get('partitioning', []):
+        field = partition['field']
+        transform = partition.get('transform', 'identity')
+
+        if transform == 'identity':
+            partition_fields.append(field)
+        else:
+            partition_fields.append(f"{transform}({field})")
+
+    partitioned_by_clause = ""
+    if partition_fields:
+        partitioned_by_clause = f"PARTITIONED BY ({', '.join(partition_fields)})"
+
     # Get table properties
     props = schema.get('table_properties', {})
-    
+
     ddl = f"""
 CREATE TABLE IF NOT EXISTS {database}.{table} (
 {columns_sql}
 )
+{partitioned_by_clause}
 LOCATION 's3://{iceberg_bucket}/{database}/{table}/'
 TBLPROPERTIES (
   'table_type' = 'ICEBERG',

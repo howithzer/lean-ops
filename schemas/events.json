@@ -30,7 +30,7 @@
             "description": "Trace correlation ID"
         },
         "publish_time": {
-            "type": "STRING",
+            "type": "TIMESTAMP",
             "required": true,
             "partition": "day",
             "description": "GCP Pub/Sub publish time (ISO 8601)"
