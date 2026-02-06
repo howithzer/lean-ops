@@ -72,6 +72,16 @@ variable "alerts_topic_arn" {
   type        = string
 }
 
+variable "schema_registry_table_name" {
+  description = "DynamoDB table name for schema registry"
+  type        = string
+}
+
+variable "schema_registry_table_arn" {
+  description = "DynamoDB table ARN for schema registry"
+  type        = string
+}
+
 variable "tags" {
   description = "Common tags"
   type        = map(string)
@@ -194,42 +204,59 @@ resource "aws_sfn_state_machine" "unified_orchestrator" {
   role_arn = aws_iam_role.step_functions.arn
 
   definition = jsonencode({
-    Comment = "Unified Orchestrator with Schema Gate - Standardized + Curated processing"
-    StartAt = "CheckSchemaExists"
+    Comment = "Unified Orchestrator with Processing Flag Gate - Standardized + Curated processing"
+    StartAt = "CheckProcessingEnabled"
     States = {
-      # Step 1: Check if schema file exists in S3
-      CheckSchemaExists = {
+      # Step 1: Check if processing is enabled via DynamoDB flag
+      CheckProcessingEnabled = {
         Type     = "Task"
-        Resource = "arn:aws:states:::lambda:invoke"
+        Resource = "arn:aws:states:::dynamodb:getItem"
         Parameters = {
-          FunctionName = var.check_schema_lambda_arn
-          Payload = {
-            "bucket"       = var.schema_bucket
-            "key.$"        = "States.Format('schemas/{}.json', $.topic_name)"
+          TableName = var.schema_registry_table_name
+          Key = {
+            "topic_name" = { "S.$" = "$.topic_name" }
           }
         }
         ResultSelector = {
-          "exists.$" = "$.Payload.exists"
+          "enabled.$"  = "$.Item.processing_enabled.BOOL"
+          "status.$"   = "$.Item.status.S"
         }
-        ResultPath = "$.schemaCheck"
-        Next       = "SchemaGate"
+        ResultPath = "$.processingCheck"
+        Next       = "ProcessingGate"
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          ResultPath  = "$.error"
+          Next        = "SkipNotRegistered"
+        }]
       }
-      # Step 2: Schema Gate - skip if no schema
-      SchemaGate = {
+      # Step 2: Processing Gate - skip if not enabled
+      ProcessingGate = {
         Type    = "Choice"
         Choices = [{
-          Variable      = "$.schemaCheck.exists"
-          BooleanEquals = true
-          Next          = "EnsureStandardizedTable"
+          And = [
+            { Variable = "$.processingCheck.enabled", BooleanEquals = true },
+            { Variable = "$.processingCheck.status", StringEquals = "READY" }
+          ]
+          Next = "EnsureStandardizedTable"
         }]
-        Default = "SkipNoSchema"
+        Default = "SkipProcessingDisabled"
       }
-      # Step 2a: Skip if no schema found
-      SkipNoSchema = {
+      # Step 2a: Skip if topic not registered
+      SkipNotRegistered = {
         Type   = "Pass"
         Result = {
           status = "skipped"
-          reason = "Schema file not found - topic not ready for standardization"
+          reason = "Topic not registered in schema registry"
+        }
+        ResultPath = "$.skipReason"
+        End        = true
+      }
+      # Step 2b: Skip if processing disabled
+      SkipProcessingDisabled = {
+        Type   = "Pass"
+        Result = {
+          status = "skipped"
+          reason = "Processing disabled for topic - schema validation pending or maintenance mode"
         }
         ResultPath = "$.skipReason"
         End        = true
@@ -373,6 +400,11 @@ resource "aws_iam_role_policy" "step_functions" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      {
+        Effect = "Allow"
+        Action = ["dynamodb:GetItem"]
+        Resource = var.schema_registry_table_arn
+      },
       {
         Effect = "Allow"
         Action = ["lambda:InvokeFunction"]

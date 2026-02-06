@@ -247,8 +247,11 @@ phase_clean() {
         --key '{"pipeline_id": {"S": "curation_events"}, "checkpoint_type": {"S": "curated"}}' \
         2>/dev/null || true
     
-    # Remove schema files (disables processing until schema phase)
-    log_info "Removing schema files from S3..."
+    # Unregister schemas using Phase 2 workflow (disables processing)
+    log_info "Unregistering schemas (disabling processing)..."
+    "$PROJECT_ROOT/scripts/unregister_schema.sh" events --remove-schema 2>/dev/null || true
+    
+    # Also remove legacy flat schema files for backwards compatibility
     aws s3 rm "s3://$BUCKET/schemas/events.json" 2>/dev/null || true
     aws s3 rm "s3://$BUCKET/schemas/curated_schema.json" 2>/dev/null || true
     
@@ -296,15 +299,19 @@ phase_day1() {
 # ==============================================================================
 
 phase_schema() {
-    log_phase "SCHEMA DEPLOYMENT"
+    log_phase "SCHEMA DEPLOYMENT (Phase 2 Workflow)"
     
-    log_info "Uploading events.json (enables Standardized)..."
-    aws s3 cp "$PROJECT_ROOT/schemas/events.json" "s3://$BUCKET/schemas/events.json"
+    # Use Phase 2 register_schema.sh workflow
+    log_info "Registering events schema using Phase 2 workflow..."
+    "$PROJECT_ROOT/scripts/register_schema.sh" events "$PROJECT_ROOT/schemas/events.json"
     
+    # Also upload curated_schema.json for legacy compatibility
     log_info "Uploading curated_schema.json (enables Curated)..."
     aws s3 cp "$PROJECT_ROOT/schemas/curated_schema.json" "s3://$BUCKET/schemas/curated_schema.json"
     
-    log_info "✅ Schemas deployed. Data onboarding is now enabled."
+    log_info "✅ Schema registered via Phase 2 workflow"
+    log_info "  - S3: s3://$BUCKET/schemas/events/active/schema.json"
+    log_info "  - DynamoDB: processing_enabled=true"
     log_info "Next Step Function run will process RAW → Standardized → Curated"
     log_info "To trigger immediately: ./tests/e2e/production_emulation.sh trigger"
 }

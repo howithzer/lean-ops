@@ -221,10 +221,12 @@ module "orchestration" {
   glue_role_arn                   = module.compute.glue_role_arn
   check_schema_lambda_arn         = module.compute.check_schema_exists_arn
   ensure_standardized_table_lambda_arn = module.compute.ensure_standardized_table_arn
+  schema_registry_table_name      = module.state.schema_registry_table_name
+  schema_registry_table_arn       = module.state.schema_registry_table_arn
   alerts_topic_arn                = module.observability.alerts_topic_arn
   tags                            = local.common_tags
 
-  depends_on = [module.compute, module.observability, module.ingestion]
+  depends_on = [module.compute, module.observability, module.ingestion, module.state]
 }
 
 # =============================================================================

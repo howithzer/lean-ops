@@ -175,6 +175,19 @@ resource "aws_dynamodb_table" "compaction_tracking" {
     type = "S"
   }
 
+}
+
+# Schema registry - processing flags and schema status per topic
+resource "aws_dynamodb_table" "schema_registry" {
+  name         = "${local.name_prefix}-schema-registry"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "topic_name"
+
+  attribute {
+    name = "topic_name"
+    type = "S"
+  }
+
   tags = local.common_tags
 }
 
@@ -222,6 +235,16 @@ output "compaction_tracking_table_name" {
   value       = aws_dynamodb_table.compaction_tracking.name
 }
 
+output "schema_registry_table_name" {
+  description = "Schema registry table name"
+  value       = aws_dynamodb_table.schema_registry.name
+}
+
+output "schema_registry_table_arn" {
+  description = "Schema registry table ARN"
+  value       = aws_dynamodb_table.schema_registry.arn
+}
+
 output "all_table_names" {
   description = "Map of all table names"
   value = {
@@ -231,5 +254,6 @@ output "all_table_names" {
     error_tracker       = aws_dynamodb_table.error_tracker.name
     counters            = aws_dynamodb_table.counters.name
     compaction_tracking = aws_dynamodb_table.compaction_tracking.name
+    schema_registry     = aws_dynamodb_table.schema_registry.name
   }
 }

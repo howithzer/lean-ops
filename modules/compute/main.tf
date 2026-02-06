@@ -980,3 +980,102 @@ output "ensure_standardized_table_arn" {
   description = "Ensure standardized table Lambda ARN"
   value       = aws_lambda_function.ensure_standardized_table.arn
 }
+
+# =============================================================================
+# LAMBDA: SCHEMA VALIDATOR (Phase 2)
+# =============================================================================
+# Validates schema files uploaded to S3 pending/ folder
+# - Checks JSON syntax and required fields
+# - Moves valid schemas to active/, invalid to failed/
+# - Updates DynamoDB processing_enabled flag
+
+data "archive_file" "schema_validator" {
+  type        = "zip"
+  source_dir  = "${path.module}/.build/schema_validator"
+  output_path = "${path.module}/.build/schema_validator.zip"
+}
+
+resource "aws_iam_role" "schema_validator" {
+  name = "${local.name_prefix}-schema-validator-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy" "schema_validator" {
+  name = "${local.name_prefix}-schema-validator-policy"
+  role = aws_iam_role.schema_validator.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:CopyObject"
+        ]
+        Resource = "arn:aws:s3:::${var.iceberg_bucket}/schemas/*"
+      },
+      {
+        Effect = "Allow"
+        Action = ["s3:ListBucket"]
+        Resource = "arn:aws:s3:::${var.iceberg_bucket}"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:GetItem"
+        ]
+        Resource = "arn:aws:dynamodb:*:*:table/${local.name_prefix}-schema-registry"
+      },
+      {
+        Effect = "Allow"
+        Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "arn:aws:logs:*:*:*"
+      }
+    ]
+  })
+}
+
+resource "aws_lambda_function" "schema_validator" {
+  filename         = data.archive_file.schema_validator.output_path
+  function_name    = "${local.name_prefix}-schema-validator"
+  role             = aws_iam_role.schema_validator.arn
+  handler          = "handler.lambda_handler"
+  source_code_hash = data.archive_file.schema_validator.output_base64sha256
+  runtime          = "python3.11"
+  timeout          = 60
+  memory_size      = 256
+
+  environment {
+    variables = {
+      SCHEMA_BUCKET         = var.iceberg_bucket
+      SCHEMA_REGISTRY_TABLE = "${local.name_prefix}-schema-registry"
+    }
+  }
+
+  tags = local.common_tags
+}
+
+output "schema_validator_arn" {
+  description = "Schema validator Lambda ARN"
+  value       = aws_lambda_function.schema_validator.arn
+}
+
+output "schema_validator_name" {
+  description = "Schema validator Lambda function name"
+  value       = aws_lambda_function.schema_validator.function_name
+}
