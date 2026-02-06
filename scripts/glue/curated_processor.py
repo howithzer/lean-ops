@@ -304,8 +304,68 @@ def validate_cdes(df, schema: dict):
     valid_df = df.filter(valid_condition)
     invalid_df = df.filter(~valid_condition)
     
+    # Get counts for spike detection
+    total_count = df.count()
+    valid_count = valid_df.count()
+    invalid_count = invalid_df.count()
+    
+    # CDE SPIKE DETECTION: Alert if violation rate exceeds 10%
+    CDE_SPIKE_THRESHOLD = 0.10  # 10%
+    
+    if total_count > 0:
+        error_rate = invalid_count / total_count
+        logger.info("CDE validation: %d total, %d passed (%.2f%%), %d failed (%.2f%%)", 
+                   total_count, valid_count, (valid_count/total_count)*100, 
+                   invalid_count, error_rate*100)
+        
+        if error_rate > CDE_SPIKE_THRESHOLD:
+            error_msg = (
+                f"⚠️  CDE VIOLATION SPIKE DETECTED: {error_rate:.2%} error rate exceeds {CDE_SPIKE_THRESHOLD:.0%} threshold. "
+                f"Total: {total_count}, Violations: {invalid_count}. "
+                "This may indicate a source system data quality issue. "
+                "INVESTIGATE IMMEDIATELY to prevent data loss."
+            )
+            logger.error(error_msg)
+            
+            # Log to CloudWatch Metrics for alerting
+            try:
+                import boto3
+                from botocore.exceptions import ClientError
+                
+                cloudwatch = boto3.client('cloudwatch')
+                cloudwatch.put_metric_data(
+                    Namespace='LeanOps/DataQuality',
+                    MetricData=[
+                        {
+                            'MetricName': 'CDE_ViolationRate',
+                            'Value': error_rate * 100,  # As percentage
+                            'Unit': 'Percent',
+                            'Dimensions': [
+                                {'Name': 'Layer', 'Value': 'Curated'},
+                                {'Name': 'JobName', 'Value': 'curated_processor'}
+                            ]
+                        },
+                        {
+                            'MetricName': 'CDE_ViolationCount',
+                            'Value': invalid_count,
+                            'Unit': 'Count',
+                            'Dimensions': [
+                                {'Name': 'Layer', 'Value': 'Curated'},
+                                {'Name': 'JobName', 'Value': 'curated_processor'}
+                            ]
+                        }
+                    ]
+                )
+                logger.info("Published CDE spike metrics to CloudWatch")
+            except (ClientError, Exception) as e:
+                logger.warning("Could not publish CloudWatch metrics: %s", e)
+            
+            # OPTIONAL: Uncomment to FAIL the pipeline on spike detection
+            # This prevents data loss but stops processing
+            # raise Exception(error_msg)
+    
     # Prepare error records for the errors table
-    if invalid_df.count() > 0:
+    if invalid_count > 0:
         errors_df = invalid_df.select(
             F.col("message_id"),
             F.col("idempotency_key"),
@@ -315,7 +375,6 @@ def validate_cdes(df, schema: dict):
             F.lit("Required CDE field is null").alias("error_message"),
             F.current_timestamp().alias("processed_ts")
         )
-        logger.info("CDE validation: %d passed, %d failed", valid_df.count(), invalid_df.count())
         return valid_df, errors_df
     
     return valid_df, None

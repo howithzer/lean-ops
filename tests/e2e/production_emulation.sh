@@ -382,6 +382,12 @@ verify_day1() {
         ((failed++))
     fi
     
+    # Run count validation
+    log_info "Running count validation..."
+    if [ -f "$PROJECT_ROOT/tests/validation/count_validation.sh" ]; then
+        "$PROJECT_ROOT/tests/validation/count_validation.sh" raw || log_warn "Count validation failed (non-blocking for day1)"
+    fi
+    
     # Summary
     log_phase "DAY 1 SUMMARY"
     log_info "Passed: $passed, Failed: $failed"
@@ -424,6 +430,12 @@ verify_day2() {
     local std_total=$(run_athena_query "SELECT COUNT(*) FROM iceberg_standardized_db.events")
     local accountability=$((std_total + parse_errors))
     log_test "Accountability: $accountability (standardized: $std_total + errors: $parse_errors)"
+    
+    # Run count validation
+    log_info "Running count validation..."
+    if [ -f "$PROJECT_ROOT/tests/validation/count_validation.sh" ]; then
+        "$PROJECT_ROOT/tests/validation/count_validation.sh" all
+    fi
     
     # Summary
     log_phase "DAY 2 SUMMARY"
@@ -551,6 +563,12 @@ verify_day4() {
     
     log_test "Periods scanned: $partition_test"
     
+    # Run count validation
+    log_info "Running count validation..."
+    if [ -f "$PROJECT_ROOT/tests/validation/count_validation.sh" ]; then
+        "$PROJECT_ROOT/tests/validation/count_validation.sh" all
+    fi
+    
     # Summary
     log_phase "DAY 4 SUMMARY"
     log_info "Passed: $passed, Failed: $failed"
@@ -655,6 +673,21 @@ verify_all() {
         FROM iceberg_curated_db.events
     " 2>/dev/null || echo "N/A")
     log_info "  Curated: $curated_periods period(s), $curated_days day partition(s)"
+    
+    # Run comprehensive validations
+    log_info "Running comprehensive validations..."
+    
+    # Count validation
+    if [ -f "$PROJECT_ROOT/tests/validation/count_validation.sh" ]; then
+        log_info "\n-- Count Validation --"
+        "$PROJECT_ROOT/tests/validation/count_validation.sh" all || log_error "Count validation failed"
+    fi
+    
+    # Deduplication validation
+    if [ -f "$PROJECT_ROOT/tests/validation/deduplication_validation.sh" ]; then
+        log_info "\n-- Deduplication Validation --"
+        "$PROJECT_ROOT/tests/validation/deduplication_validation.sh" all || log_error "Deduplication validation failed"
+    fi
     
     echo ""
 }
