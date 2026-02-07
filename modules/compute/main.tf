@@ -1070,6 +1070,42 @@ resource "aws_lambda_function" "schema_validator" {
   tags = local.common_tags
 }
 
+# =============================================================================
+# EVENTBRIDGE: S3 SCHEMA UPLOAD TRIGGER
+# =============================================================================
+# Triggers schema_validator Lambda when a schema is uploaded to pending/
+
+resource "aws_cloudwatch_event_rule" "schema_upload" {
+  name        = "${local.name_prefix}-schema-upload"
+  description = "Trigger schema validator on pending/ uploads"
+
+  event_pattern = jsonencode({
+    source      = ["aws.s3"]
+    detail-type = ["Object Created"]
+    detail = {
+      bucket = { name = [var.iceberg_bucket] }
+      object = { 
+        key = [{ prefix = "schemas/" }, { suffix = "/pending/schema.json" }] 
+      }
+    }
+  })
+
+  tags = local.common_tags
+}
+
+resource "aws_cloudwatch_event_target" "schema_validator" {
+  rule = aws_cloudwatch_event_rule.schema_upload.name
+  arn  = aws_lambda_function.schema_validator.arn
+}
+
+resource "aws_lambda_permission" "eventbridge_schema" {
+  statement_id  = "AllowEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.schema_validator.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.schema_upload.arn
+}
+
 output "schema_validator_arn" {
   description = "Schema validator Lambda ARN"
   value       = aws_lambda_function.schema_validator.arn

@@ -72,6 +72,16 @@ data "aws_s3_bucket" "schemas" {
 }
 
 # =============================================================================
+# S3 BUCKET NOTIFICATION - Enable EventBridge for Schema Uploads
+# =============================================================================
+# Required for EventBridge to receive S3 events (Object Created)
+
+resource "aws_s3_bucket_notification" "iceberg_eventbridge" {
+  bucket      = data.aws_s3_bucket.iceberg.id
+  eventbridge = true
+}
+
+# =============================================================================
 # OUTPUTS
 # =============================================================================
 
