@@ -205,36 +205,44 @@ inject_data() {
 phase_clean() {
     log_phase "CLEAN: RESET ALL DATA"
     
-    log_info "This will DROP and recreate all Iceberg tables and reset checkpoints."
+    log_info "This will TRUNCATE RAW tables and DROP downstream tables, then reset checkpoints."
     
-    # Tables to drop
-    local tables=(
+    # RAW tables: DELETE data but keep schema (Terraform created these)
+    local raw_tables=(
         "iceberg_raw_db.events_staging"
         "iceberg_raw_db.orders_staging"
         "iceberg_raw_db.payments_staging"
+    )
+    
+    # Downstream tables: DROP (will be recreated by Glue jobs on first run)
+    local downstream_tables=(
         "iceberg_standardized_db.events"
         "iceberg_standardized_db.parse_errors"
         "iceberg_curated_db.events"
         "iceberg_curated_db.errors"
+        "iceberg_curated_db.drift_log"
     )
     
-    # Drop each table
-    for table in "${tables[@]}"; do
+    # Truncate RAW tables (DELETE FROM keeps table structure)
+    for table in "${raw_tables[@]}"; do
+        log_info "Truncating $table..."
+        run_athena_query "DELETE FROM $table" >/dev/null 2>&1 || true
+    done
+    
+    # Drop downstream tables (Glue jobs will recreate with correct schemas)
+    for table in "${downstream_tables[@]}"; do
         log_info "Dropping $table..."
         run_athena_query "DROP TABLE IF EXISTS $table" >/dev/null 2>&1 || true
     done
     
-    log_info "Waiting 5s for drops to complete..."
+    log_info "Waiting 5s for operations to complete..."
     sleep 5
 
-    # NOTE: Tables are NOT recreated here!
-    # Let Terraform (RAW), Lambda (Standardized), and Glue (Curated) create them with correct schemas.
-    # This ensures schemas match the actual DDL generation code.
-    log_info "Tables dropped. They will be recreated automatically by:"
-    log_info "  - RAW tables: Already exist from Terraform (or run: terraform apply)"
-    log_info "  - Standardized table: Created by ensure_standardized_table Lambda on first trigger"
-    log_info "  - Curated table: Created by curated_processor Glue job on first run"
-    log_info "  - Error tables: Created by Glue jobs on first run"
+    log_info "Tables reset. Table creation:"
+    log_info "  - RAW tables: PRESERVED (data truncated only)"
+    log_info "  - Standardized table: Will be created by Glue job on first run"
+    log_info "  - Curated table: Will be created by Glue job on first run"
+    log_info "  - Error/Drift tables: Will be created by Glue jobs on first run"
 
     # Reset DynamoDB checkpoints
     log_info "Resetting DynamoDB checkpoints..."
@@ -257,6 +265,7 @@ phase_clean() {
     
     log_info "✅ CLEAN complete. Ready for fresh Day 1."
 }
+
 
 # ==============================================================================
 # PHASE: DAY 1
