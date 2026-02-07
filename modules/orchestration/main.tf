@@ -271,7 +271,7 @@ resource "aws_sfn_state_machine" "unified_orchestrator" {
             "database"      = "iceberg_standardized_db"
             "table.$"       = "$.topic_name"
             "schema_bucket" = var.schema_bucket
-            "schema_key.$"  = "States.Format('schemas/{}.json', $.topic_name)"
+            "schema_key.$"  = "States.Format('schemas/{}/active/schema.json', $.topic_name)"
             "iceberg_bucket" = var.iceberg_bucket
           }
         }
@@ -318,7 +318,7 @@ resource "aws_sfn_state_machine" "unified_orchestrator" {
           FunctionName = var.check_schema_lambda_arn
           Payload = {
             "bucket" = var.schema_bucket
-            "key"    = "schemas/curated_schema.json"
+            "key.$"  = "States.Format('schemas/{}/active/schema.json', $.topic_name)"
           }
         }
         ResultPath = "$.curatedSchemaCheck"
