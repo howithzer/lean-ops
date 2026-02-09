@@ -1,0 +1,33 @@
+{
+    "name": "Payments E2E Test",
+    "description": "1000 payment records for E2E validation",
+    "run_mode": "local",
+    "log_format": "user",
+    "log_level": "INFO",
+    "sink_type": "sqs",
+    "concurrency": 5,
+    "batch_size": 50,
+    "total_records": 1000,
+    "metrics_interval_seconds": 10,
+    "test_metadata": {
+        "test_id": "payments_e2e",
+        "batch_id": "payments_test",
+        "phase": "test"
+    },
+    "schema_config": {
+        "base_schema": "../../Testing_Framework_EEH_2.0/sample-data-generator/schemas/iceberg_raw_payments.json",
+        "drift": {
+            "enabled": false
+        },
+        "duplicates": {
+            "enabled": false
+        },
+        "error_injection": {
+            "enabled": false
+        }
+    },
+    "sqs_config": {
+        "target_sqs_url": "https://sqs.us-east-1.amazonaws.com/487500748616/lean-ops-dev-payments-queue",
+        "region": "us-east-1"
+    }
+}

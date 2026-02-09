@@ -42,6 +42,7 @@ LAMBDAS=(
     "circuit_breaker"        # Disables SQS triggers if error rate too high
     "check_schema"           # Checks if schema file exists in S3
     "update_checkpoint"      # Updates checkpoint after processing
+    "schema_validator"       # Validates schemas and moves pending -> active
 )
 
 echo "========================================"

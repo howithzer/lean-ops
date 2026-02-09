@@ -210,6 +210,11 @@ output "locks_table_name" {
   value       = aws_dynamodb_table.locks.name
 }
 
+output "locks_table_arn" {
+  description = "Locks table ARN"
+  value       = aws_dynamodb_table.locks.arn
+}
+
 output "topic_registry_table_name" {
   description = "Topic registry table name"
   value       = aws_dynamodb_table.topic_registry.name

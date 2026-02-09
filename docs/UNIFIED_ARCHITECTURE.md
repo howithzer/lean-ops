@@ -36,10 +36,10 @@ Move high-velocity IoT event data from **GCP Pub/Sub** (700+ topics) to an **AWS
 │                              GCP → AWS DATA FLOW                                │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│  ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌──────────┐    ┌─────────────┐  │
-│  │  GCP    │    │  EKS    │    │   SQS   │    │  Lambda  │    │  Firehose   │  │
-│  │ Pub/Sub │───▶│ Bridge  │───▶│  Queue  │───▶│ Processor│───▶│  (shared)   │  │
-│  └─────────┘    └─────────┘    └─────────┘    └──────────┘    └──────┬──────┘  │
+│  ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌──────────┐    ┌─────────────┐   │
+│  │  GCP    │    │  EKS    │    │   SQS   │    │  Lambda  │    │  Firehose   │   │
+│  │ Pub/Sub │───▶│ Bridge  │───▶│  Queue  │───▶│ Processor│───▶│  (shared)   │   │
+│  └─────────┘    └─────────┘    └─────────┘    └──────────┘    └──────┬──────┘   │
 │                                     │                                 │         │
 │                                     ▼                                 ▼         │
 │                              ┌─────────────┐                  ┌─────────────┐   │
@@ -73,7 +73,7 @@ Move high-velocity IoT event data from **GCP Pub/Sub** (700+ topics) to an **AWS
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│  ① GCP Pub/Sub                                                                  │
+│  ① GCP Pub/Sub                                                                 │
 │     • Messages contain: message_id, publish_time, idempotency_key, payload      │
 │                                                                                 │
 │  ② EKS Bridge (Python containers)                                               │
@@ -96,7 +96,7 @@ Move high-velocity IoT event data from **GCP Pub/Sub** (700+ topics) to an **AWS
 │     • Transformation Lambda adds topic routing                                  │
 │     • Writes Parquet to RAW Iceberg table                                       │
 │                                                                                 │
-│  ⑥ RAW Iceberg Table                                                            │
+│  ⑥ RAW Iceberg Table                                                           │
 │     • Append-only, immutable audit trail                                        │
 │     • Partitioned by: day(publish_time)                                         │
 │     • Columns: message_id, publish_time, topic_name, json_payload               │
@@ -109,7 +109,7 @@ Move high-velocity IoT event data from **GCP Pub/Sub** (700+ topics) to an **AWS
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │  Triggered: Every 15 minutes via Step Functions                                 │
 │                                                                                 │
-│  ① Stage Gate Check                                                             │
+│  ① Stage Gate Check                                                            │
 │     • Prior batch successful?                                                   │
 │     • Schema valid? (DynamoDB flag: processing_enabled)                         │
 │                                                                                 │

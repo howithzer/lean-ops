@@ -1023,14 +1023,40 @@ resource "aws_iam_role_policy" "schema_validator" {
           "s3:GetObject",
           "s3:PutObject",
           "s3:DeleteObject",
-          "s3:CopyObject"
+          "s3:CopyObject",
+          "s3:ListBucket",
+          "s3:GetBucketLocation"
         ]
-        Resource = "arn:aws:s3:::${var.iceberg_bucket}/schemas/*"
+        Resource = [
+          "arn:aws:s3:::${var.iceberg_bucket}",
+          "arn:aws:s3:::${var.iceberg_bucket}/*"
+        ]
       },
+      # Athena permissions for DDL execution
       {
         Effect = "Allow"
-        Action = ["s3:ListBucket"]
-        Resource = "arn:aws:s3:::${var.iceberg_bucket}"
+        Action = [
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution",
+          "athena:GetQueryResults"
+        ]
+        Resource = "*"
+      },
+      # Glue permissions for table creation
+      {
+        Effect = "Allow"
+        Action = [
+          "glue:GetDatabase",
+          "glue:GetTable",
+          "glue:CreateTable",
+          "glue:UpdateTable",
+          "glue:GetPartitions"
+        ]
+        Resource = [
+          "arn:aws:glue:*:*:catalog",
+          "arn:aws:glue:*:*:database/iceberg_*",
+          "arn:aws:glue:*:*:table/iceberg_*/*"
+        ]
       },
       {
         Effect = "Allow"
@@ -1057,13 +1083,15 @@ resource "aws_lambda_function" "schema_validator" {
   handler          = "handler.lambda_handler"
   source_code_hash = data.archive_file.schema_validator.output_base64sha256
   runtime          = "python3.11"
-  timeout          = 60
+  timeout          = 300  # Increased for Athena DDL execution
   memory_size      = 256
 
   environment {
     variables = {
       SCHEMA_BUCKET         = var.iceberg_bucket
       SCHEMA_REGISTRY_TABLE = "${local.name_prefix}-schema-registry"
+      ATHENA_OUTPUT_BUCKET  = var.iceberg_bucket
+      ATHENA_WORKGROUP      = "primary"
     }
   }
 
@@ -1085,7 +1113,7 @@ resource "aws_cloudwatch_event_rule" "schema_upload" {
     detail = {
       bucket = { name = [var.iceberg_bucket] }
       object = { 
-        key = [{ prefix = "schemas/" }, { suffix = "/pending/schema.json" }] 
+        key = [{ wildcard = "schemas/*/pending/schema.json" }]
       }
     }
   })

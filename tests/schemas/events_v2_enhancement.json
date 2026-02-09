@@ -1,0 +1,59 @@
+{
+  "schema_version": "2.0.0",
+  "table_name": "events",
+  "envelope_columns": {
+    "message_id": {
+      "type": "STRING",
+      "required": true
+    },
+    "idempotency_key": {
+      "type": "STRING",
+      "required": true
+    },
+    "publish_time": {
+      "type": "TIMESTAMP",
+      "required": true
+    }
+  },
+  "payload_columns": {
+    "user_id": {
+      "type": "BIGINT",
+      "json_path": "$.userId",
+      "cde": true,
+      "comment": "Widened from INT to BIGINT"
+    },
+    "event_type": {
+      "type": "STRING",
+      "json_path": "$.eventType",
+      "cde": true
+    },
+    "device_type": {
+      "type": "STRING",
+      "json_path": "$.deviceType",
+      "cde": false,
+      "comment": "New column added"
+    },
+    "browser_version": {
+      "type": "STRING",
+      "json_path": "$.browserVersion",
+      "cde": false,
+      "comment": "New column added"
+    }
+  },
+  "partitioning": [
+    {
+      "field": "period_reference",
+      "transform": "identity"
+    },
+    {
+      "field": "publish_time",
+      "transform": "day"
+    }
+  ],
+  "backfill_config": {
+    "enabled": true,
+    "lookback_days": 7,
+    "strategy": "incremental",
+    "chunk_days": 1
+  }
+}

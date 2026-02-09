@@ -1,0 +1,12 @@
+{
+    "schema_version": "1.0.0",
+    "table_name": "test_schema_phase2",
+    "description": "Test schema for Phase 2 unit tests",
+    "envelope_columns": {
+        "message_id": {"type": "STRING", "required": true},
+        "idempotency_key": {"type": "STRING", "required": true}
+    },
+    "payload_columns": {
+        "test_field": {"json_path": "$.test"}
+    }
+}

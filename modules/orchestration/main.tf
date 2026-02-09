@@ -53,13 +53,15 @@ variable "glue_role_arn" {
 }
 
 variable "check_schema_lambda_arn" {
-  description = "Check schema Lambda ARN"
+  description = "Check schema Lambda ARN (DEPRECATED - kept for backward compatibility)"
   type        = string
+  default     = ""
 }
 
 variable "ensure_standardized_table_lambda_arn" {
-  description = "Ensure standardized table Lambda ARN"
+  description = "Ensure standardized table Lambda ARN (DEPRECATED - tables created by schema_validator)"
   type        = string
+  default     = ""
 }
 
 variable "schema_bucket" {
@@ -204,7 +206,7 @@ resource "aws_sfn_state_machine" "unified_orchestrator" {
   role_arn = aws_iam_role.step_functions.arn
 
   definition = jsonencode({
-    Comment = "Unified Orchestrator with Processing Flag Gate - Standardized + Curated processing"
+    Comment = "Unified Orchestrator with Processing Flag Gate (uses execution name for concurrency control)"
     StartAt = "CheckProcessingEnabled"
     States = {
       # Step 1: Check if processing is enabled via DynamoDB flag
@@ -230,6 +232,7 @@ resource "aws_sfn_state_machine" "unified_orchestrator" {
         }]
       }
       # Step 2: Processing Gate - skip if not enabled
+      # If enabled=true and status=READY, tables are GUARANTEED to exist (created by schema_validator)
       ProcessingGate = {
         Type    = "Choice"
         Choices = [{
@@ -237,58 +240,20 @@ resource "aws_sfn_state_machine" "unified_orchestrator" {
             { Variable = "$.processingCheck.enabled", BooleanEquals = true },
             { Variable = "$.processingCheck.status", StringEquals = "READY" }
           ]
-          Next = "EnsureStandardizedTable"
+          Next = "RunStandardized"  # Tables exist, go directly to job
         }]
         Default = "SkipProcessingDisabled"
       }
-      # Step 2a: Skip if topic not registered
+      # Skip states - no lock release needed anymore
       SkipNotRegistered = {
-        Type   = "Pass"
-        Result = {
-          status = "skipped"
-          reason = "Topic not registered in schema registry"
-        }
-        ResultPath = "$.skipReason"
-        End        = true
+        Type    = "Succeed"
+        Comment = "Topic not registered in schema registry"
       }
-      # Step 2b: Skip if processing disabled
       SkipProcessingDisabled = {
-        Type   = "Pass"
-        Result = {
-          status = "skipped"
-          reason = "Processing disabled for topic - schema validation pending or maintenance mode"
-        }
-        ResultPath = "$.skipReason"
-        End        = true
+        Type    = "Succeed"
+        Comment = "Processing disabled for topic - schema validation pending or maintenance mode"
       }
-      # Step 3: Ensure Standardized table exists with proper DDL
-      EnsureStandardizedTable = {
-        Type     = "Task"
-        Resource = "arn:aws:states:::lambda:invoke"
-        Parameters = {
-          FunctionName = var.ensure_standardized_table_lambda_arn
-          Payload = {
-            "database"      = "iceberg_standardized_db"
-            "table.$"       = "$.topic_name"
-            "schema_bucket" = var.schema_bucket
-            "schema_key.$"  = "States.Format('schemas/{}/active/schema.json', $.topic_name)"
-            "iceberg_bucket" = var.iceberg_bucket
-          }
-        }
-        ResultSelector = {
-          "status.$"        = "$.Payload.status"
-          "table.$"         = "$.Payload.table"
-          "columns_count.$" = "$.Payload.columns_count"
-        }
-        ResultPath = "$.tableCheck"
-        Next       = "RunStandardized"
-        Catch = [{
-          ErrorEquals = ["States.ALL"]
-          ResultPath  = "$.error"
-          Next        = "HandleError"
-        }]
-      }
-      # Step 4: Run Standardization Glue Job
+      # Step 3: Run Standardization Glue Job (tables guaranteed to exist)
       RunStandardized = {
         Type     = "Task"
         Resource = "arn:aws:states:::glue:startJobRun.sync"
@@ -303,43 +268,14 @@ resource "aws_sfn_state_machine" "unified_orchestrator" {
           }
         }
         ResultPath = "$.glueResult"
-        Next       = "CheckCuratedReady"
+        Next       = "RunCurated"  # Always run Curated (table guaranteed to exist)
         Catch = [{
           ErrorEquals = ["States.ALL"]
           ResultPath  = "$.error"
           Next        = "HandleError"
         }]
       }
-      # Step 5: Check if Curated schema exists
-      CheckCuratedReady = {
-        Type     = "Task"
-        Resource = "arn:aws:states:::lambda:invoke"
-        Parameters = {
-          FunctionName = var.check_schema_lambda_arn
-          Payload = {
-            "bucket" = var.schema_bucket
-            "key.$"  = "States.Format('schemas/{}/active/schema.json', $.topic_name)"
-          }
-        }
-        ResultPath = "$.curatedSchemaCheck"
-        Next       = "CuratedSchemaChoice"
-        Catch = [{
-          ErrorEquals = ["States.ALL"]
-          ResultPath  = "$.error"
-          Next        = "SuccessStandardizedOnly"
-        }]
-      }
-      # Step 6: Choice - if curated schema exists, run Curated job
-      CuratedSchemaChoice = {
-        Type = "Choice"
-        Choices = [{
-          Variable      = "$.curatedSchemaCheck.Payload.exists"
-          BooleanEquals = true
-          Next          = "RunCurated"
-        }]
-        Default = "SuccessStandardizedOnly"
-      }
-      # Step 7: Run Curated Glue Job
+      # Step 4: Run Curated Glue Job (table guaranteed to exist)
       RunCurated = {
         Type     = "Task"
         Resource = "arn:aws:states:::glue:startJobRun.sync"
@@ -362,16 +298,12 @@ resource "aws_sfn_state_machine" "unified_orchestrator" {
           Next        = "HandleError"
         }]
       }
-      # Success states
-      SuccessStandardizedOnly = {
-        Type    = "Succeed"
-        Comment = "Standardized succeeded, Curated skipped (no schema)"
-      }
+      # Success state
       SuccessFull = {
         Type    = "Succeed"
         Comment = "Full pipeline success - Standardized and Curated complete"
       }
-      # Error handling
+      # Error handling - notify and fail
       HandleError = {
         Type     = "Task"
         Resource = "arn:aws:states:::sns:publish"

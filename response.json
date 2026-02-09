@@ -1,0 +1,1 @@
+{"statusCode": 200, "valid": true, "topic": "events", "schema_path": "s3://lean-ops-development-iceberg/schemas/events/active/schema.json", "message": "Schema validated and activated"}

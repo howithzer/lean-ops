@@ -75,8 +75,8 @@ for key, value in ICEBERG_CATALOG_SETTINGS.items():
 spark.conf.set("spark.sql.catalog.glue_catalog.warehouse", ICEBERG_WAREHOUSE)
 
 # Full table paths (using glue_catalog prefix for Iceberg)
-STANDARDIZED_TABLE = f"glue_catalog.{STANDARDIZED_DATABASE}.events"
-CURATED_TABLE = f"glue_catalog.{CURATED_DATABASE}.events"
+STANDARDIZED_TABLE = f"glue_catalog.{STANDARDIZED_DATABASE}.{TOPIC_NAME}"
+CURATED_TABLE = f"glue_catalog.{CURATED_DATABASE}.{TOPIC_NAME}"
 ERRORS_TABLE = f"glue_catalog.{CURATED_DATABASE}.errors"
 
 
@@ -583,8 +583,8 @@ def main():
             raise RuntimeError("Schema missing 'columns' definition")
         logger.info("Schema loaded with %d columns", len(schema.get('columns', {})))
         
-        # Create Curated table from schema if it doesn't exist
-        # This enables schema-driven deployment - table only created when schema is deployed
+        # NOTE: Table should already be created by schema_validator Lambda.
+        # This is a safety fallback for direct testing or legacy deployments.
         curated_location = f"s3://{ICEBERG_BUCKET}/iceberg_curated_db/events/"
         create_curated_table_from_schema(spark, schema, CURATED_TABLE, curated_location)
         

@@ -1,0 +1,42 @@
+{
+  "schema_version": "3.0.0",
+  "table_name": "events",
+  "envelope_columns": {
+    "message_id": {
+      "type": "STRING",
+      "required": true
+    },
+    "idempotency_key": {
+      "type": "STRING",
+      "required": true
+    },
+    "publish_time": {
+      "type": "TIMESTAMP",
+      "required": true
+    }
+  },
+  "payload_columns": {
+    "user_id": {
+      "type": "INT",
+      "json_path": "$.userId",
+      "cde": true,
+      "comment": "BREAKING: Narrowed from BIGINT to INT"
+    },
+    "event_type": {
+      "type": "STRING",
+      "json_path": "$.eventType",
+      "cde": true
+    }
+  },
+  "partitioning": [
+    {
+      "field": "period_reference",
+      "transform": "identity"
+    },
+    {
+      "field": "publish_time",
+      "transform": "day"
+    }
+  ],
+  "comment": "This schema has breaking changes and should be rejected"
+}

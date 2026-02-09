@@ -1,0 +1,52 @@
+{
+    "openapi": "3.0.0",
+    "info": {
+        "title": "Payments Schema",
+        "version": "1.0.0"
+    },
+    "table_name": "payments",
+    "envelope_columns": {
+        "message_id": "STRING",
+        "publish_time": "TIMESTAMP",
+        "idempotency_key": "STRING",
+        "period_reference": "STRING",
+        "correlation_id": "STRING",
+        "ingestion_ts": "BIGINT"
+    },
+    "payload_columns": {
+        "payment_id": "STRING",
+        "amount": "DOUBLE",
+        "currency": "STRING",
+        "status": "STRING",
+        "payment_method": "STRING",
+        "user_id": "STRING",
+        "transaction_date": "TIMESTAMP"
+    },
+    "critical_data_elements": [
+        "idempotency_key",
+        "payment_id",
+        "transaction_date"
+    ],
+    "components": {
+        "schemas": {
+            "Payment": {
+                "type": "object",
+                "properties": {
+                    "payment_id": {
+                        "type": "string"
+                    },
+                    "amount": {
+                        "type": "number"
+                    },
+                    "transaction_date": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "payment_id",
+                    "transaction_date"
+                ]
+            }
+        }
+    }
+}

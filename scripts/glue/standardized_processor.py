@@ -80,7 +80,7 @@ spark.conf.set("spark.sql.catalog.glue_catalog.warehouse", ICEBERG_WAREHOUSE)
 
 # Full table paths (using glue_catalog prefix for Iceberg)
 RAW_TABLE = f"glue_catalog.{RAW_DATABASE}.{TOPIC_NAME}_staging"
-STANDARDIZED_TABLE = f"glue_catalog.{STANDARDIZED_DATABASE}.events"
+STANDARDIZED_TABLE = f"glue_catalog.{STANDARDIZED_DATABASE}.{TOPIC_NAME}"
 
 
 # ==============================================================================
@@ -410,6 +410,9 @@ def main():
                         target_col, 
                         F.coalesce(F.col(target_col), F.col(source_col))
                     )
+                # Drop source column to avoid duplicates in table
+                df_flattened = df_flattened.drop(source_col)
+                logger.info("Dropped source column: %s", source_col)
         
         # ===== STAGE 5: EVOLVE =====
         # Add any new columns to the table (schema evolution)

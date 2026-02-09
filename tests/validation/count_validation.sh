@@ -182,6 +182,13 @@ validate_raw_to_standardized() {
     local std_count=${STD_COUNT:-$(get_table_count "iceberg_standardized_db.events")}
     local parse_errors=${PARSE_ERRORS:-$(get_table_count "iceberg_standardized_db.parse_errors")}
 
+    # Handle ERROR responses from Athena
+    if [ "$raw_count" = "ERROR" ] || [ "$std_count" = "ERROR" ] || [ "$parse_errors" = "ERROR" ]; then
+        log_error "Failed to query one or more tables (Athena query failed)"
+        record_test "RAW → Standardized accountability" "FAIL" "Unable to query tables"
+        return 1
+    fi
+
     if [ "$raw_count" = "0" ]; then
         log_warn "RAW table is empty - skipping validation"
         return 0
@@ -238,6 +245,13 @@ validate_standardized_to_curated() {
     local curated_count=${CURATED_COUNT:-$(get_table_count "iceberg_curated_db.events")}
     local cde_errors=${CDE_ERRORS:-$(get_table_count "iceberg_curated_db.errors")}
 
+    # Handle ERROR responses from Athena
+    if [ "$std_count" = "ERROR" ] || [ "$curated_count" = "ERROR" ] || [ "$cde_errors" = "ERROR" ]; then
+        log_error "Failed to query one or more tables (Athena query failed)"
+        record_test "Standardized → Curated accountability" "FAIL" "Unable to query tables"
+        return 1
+    fi
+
     if [ "$std_count" = "0" ]; then
         log_warn "Standardized table is empty - skipping validation"
         return 0
@@ -290,6 +304,13 @@ validate_cde_spike_detection() {
 
     local std_count=${STD_COUNT:-$(get_table_count "iceberg_standardized_db.events")}
     local cde_errors=${CDE_ERRORS:-$(get_table_count "iceberg_curated_db.errors")}
+
+    # Handle ERROR responses from Athena
+    if [ "$std_count" = "ERROR" ] || [ "$cde_errors" = "ERROR" ]; then
+        log_error "Failed to query one or more tables (Athena query failed)"
+        record_test "CDE violation spike detection" "FAIL" "Unable to query tables"
+        return 1
+    fi
 
     if [ "$std_count" = "0" ]; then
         log_warn "Standardized table is empty - skipping validation"
