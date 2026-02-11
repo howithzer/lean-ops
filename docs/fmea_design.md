@@ -110,46 +110,62 @@ When a batch fails the Audit step, we do NOT try to "fix" the branch. We **aband
     *   It creates a **NEW** branch: `audit_batch_retry_1`.
 5.  **Commit:** `audit_batch_retry_1` -> `main`. Old branch is ignored/deleted by cleanup policy.
 
-### 4.4 Deep Dive: Loop Prevention via "Quarantine Pattern"
-**Problem:** We cannot modify Raw data (Immutable), but re-running the job with the same offset will pick up the same bad record.
+### 4.4 Deep Dive: Loop Prevention via "Iceberg Sidecar Pattern" (Selected)
 
-**Solution:** We use a **Quarantine Table (DynamoDB)** to virtually "mask" bad records during processing.
+To keep the main flow "lean" and avoiding external dependencies (DynamoDB), we use an **Iceberg Anti-Join**.
 
-1.  **The Failure:** Job fails on Record X (ID: `GCP_123`). Circuit Breaker trips.
-2.  **The Fix (Quarantine):**
-    *   Support adds `GCP_123` to `QuarantineTable`.
-    *   *Raw Data is untouched.*
-3.  **The Re-Run (Glue Logic):**
-    *   Job starts. Reads offsets N..M.
-    *   **Filtering Step:**
-        *   `df_clean = df_raw.filter(NOT (id IN Quarantine AND is_replay == false))`
-        *   *Meaning:* Block the ID *unless* it's marked as a fixed replay.
-    *   **Result:** The original bad record (no flag) is skipped. The batch passes.
-4.  **Re-Injection (The Patch):**
-    *   Support uses `data-patcher` to fix payload and re-inject.
-    *   **Crucial:** The Patcher adds `is_replay: true` to the body/metadata.
-    *   This new record (`GCP_123`, `is_replay=true`) lands in a *future* batch.
-    *   Because of the flag, it **Bypasses** the quarantine filter and is processed successfully.
+**The Architecture:**
+1.  **Main Job:** Reads `Raw Data` AND `BadRecordsTable` (Iceberg).
+2.  **Logic:** `clean_df = raw_df.join(bad_records, "id", "left_anti")`
+3.  **Process:** Standardize -> Write to Branch -> Audit -> Commit.
 
-**Why this is safer:**
-*   **Immutability:** Raw data is never deleted.
-*   **Idempotency:** We keep the original Business ID (`GCP_123`).
-*   **Loop Prevention:** The filter block smart enough to block the bad copy and allow the good copy.
+**The Workflow:**
+1.  **Failure:** Job fails on ID `GCP_123`.
+2.  **Fix:** Support adds `GCP_123` to `BadRecordsTable` (via simple SQL `INSERT`).
+3.  **Re-Run:**
+    *   Job starts. Reads Raw (includes `GCP_123`).
+    *   Job reads BadRecords (includes `GCP_123`).
+    *   **Anti-Join:** Removes `GCP_123`.
+    *   **Result:** Batch passes.
+4.  **Re-Injection:**
+    *   Support uses `data-patcher` to fix and re-inject `GCP_123` (as new ID or with `is_replay` flag).
 
-### 4.5 Performance Optimization for Quarantine
-**Concern:** Scanning the Quarantine table every 15 minutes could be inefficient.
-
-**Optimization Strategy:**
-1.  **Keep it Small (TTL):** We enable **DynamoDB Time-To-Live (TTL)** on the Quarantine Table. Entries automatically expire after **30 days**.
-    *   *Rationale:* If a batch hasn't been fixed in 30 days, it's likely abandoned. This keeps the table size small (< 10 MB).
-2.  **Broadcast Join:**
-    *   Since the table is kept small, Spark performs a **Broadcast Join** (sends the small list to all executors).
-    *   *Impact:* This operation takes **milliseconds** and avoids checking DynamoDB for every single row (which would be slow).
-3.  **Result:** The performance penalty is negligible (Projected: < 2 seconds added to job time) while maintaining 100% compliance logic.
+**Why this is the "Leanest" Choice:**
+*   **Native:** Uses Spark/Iceberg for everything. No DynamoDB scans/costs.
+*   **Simple:** It's just a SQL Join.
+*   **Maintenance:** `BadRecordsTable` is just another table (easy to expire/partition).
 
 ---
 
-## 5. Tool Walkthrough: The Data Patcher
+## 5. Design Alternatives Considered
+
+We evaluated 3 patterns for Loop Prevention.
+
+### Option A: DynamoDB Quarantine (Discarded)
+*   *Design:* Scan external table for bad IDs.
+*   *Pros:* Fast for single-row lookups.
+*   *Cons:* Infrastructure cost, Scan inefficiency for large batches, Consistency delays.
+
+### Option B: Upstream Lambda Validation (Guardrails)
+*   *Design:* Validate JSON in Lambda *before* Firehose.
+*   *Pros:* "Pure" Lakehouse (no bad data ever enters).
+*   *Cons:* **Complexity & Cost.**
+    *   Lambda must handle high throughput.
+    *   Re-implementing validation logic (Python vs Spark).
+    *   Hard to replay (must re-send to API).
+
+### Option C: The "Iceberg Sidecar" (Selected)
+*   *Design:* Anti-Join against a "Bad Data" Iceberg table.
+*   *Pros:*
+    *   **Lean Main Flow:** Just a standard SQL Join.
+    *   **Immutability:** Raw data is untouched.
+    *   **Consistency:** ACID guarantees on the Bad Data table.
+*   *Cons:* Small overhead for the Join (negligible for small error counts).
+
+
+---
+
+## 6. Tool Walkthrough: The Data Patcher
 
 The `data-patcher` is a specific CLI tool for the support team.
 
