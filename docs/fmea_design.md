@@ -110,25 +110,30 @@ When a batch fails the Audit step, we do NOT try to "fix" the branch. We **aband
     *   It creates a **NEW** branch: `audit_batch_retry_1`.
 5.  **Commit:** `audit_batch_retry_1` -> `main`. Old branch is ignored/deleted by cleanup policy.
 
-### 4.4 Deep Dive: Offset Management & Loop Prevention
-**Question:** If the job failed and we didn't advance the offset, won't the re-run pick up the **same bad record** and fail again (infinite loop)?
+### 4.4 Deep Dive: Loop Prevention via "Quarantine Pattern"
+**Problem:** We cannot modify Raw data (Immutable), but re-running the job with the same offset will pick up the same bad record.
 
-**Answer:** Yes, it picks up the same record. The "Loop" is broken by **changing the state of that record** before the re-run.
+**Solution:** We use a **Quarantine Table (DynamoDB)** to virtually "mask" bad records during processing.
 
-*   **Scenario:** A batch contains 10,000 records. 1 record is "Bad" (causes Audit Failure in Branch A).
-*   **Remediation:**
-    1.  **Patcher:** Support team extracts bad record, fixes it, re-injects to SQS (Record lands in *future* batch).
-    2.  **Clean Up:** Support team issues a `DELETE` against the Raw table for the bad `message_id`.
-        *   `DELETE FROM raw_table WHERE message_id = 'bad_1'`
-        *   This creates a new Snapshot in the Raw table.
-*   **Re-Run:**
-    1.  Glue job starts with *old* offset. checks for new data.
-    2.  It sees the original raw files (Offset N).
-    3.  Crucially, it reads the data *as of Current Snapshot*.
-    4.  Because of the `DELETE`, the "Bad Record" is filtered out by Iceberg reader.
-    5.  The job processes 9,999 records.
-    6.  **Success!** Branch B passes Audit. WAP Commit. Offset updates.
-*   **Result:** 100% compliance. Bad record removed (to be re-processed correctly in next batch), Good records committed. Infinite loop avoided.
+1.  **The Failure:** Job fails on Record X. Circuit Breaker Trips.
+2.  **The Fix (Support Action):**
+    *   Inspect Record X.
+    *   **Action:** Add `message_id` of Record X to `QuarantineTable` in DynamoDB with reason "Malformatted JSON - 2024-02-10".
+    *   *Note:* The Raw record in S3/Iceberg remains untouched (Immutable).
+3.  **The Re-Run (Glue Logic):**
+    *   Job starts. Reads offsets N..M.
+    *   **Filtering Step:** The job performs a check against the `QuarantineTable` (or broadcasts the list if small).
+    *   `df_clean = df_raw.join(quarantine, "message_id", "left_anti")`
+    *   **Result:** Glue *sees* Review X but *excludes* it from processing.
+    *   The batch passes Audit. WAP Commit succeeds.
+4.  **Re-Injection:**
+    *   Support uses `data-patcher` to fix and re-inject Record X as a *new* message (new ID, old functional keys).
+    *   This new message is picked up in a *future* batch.
+
+**Why this is safer:**
+*   **Immutability:** Raw data is never deleted.
+*   **Audit Trail:** The DynamoDB table is a permanent log of "Skipped Records."
+*   **Safety:** No risk of accidental bulk deletes via SQL.
 
 ---
 
