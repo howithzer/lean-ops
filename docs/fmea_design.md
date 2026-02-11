@@ -25,22 +25,34 @@ It also details the **Write-Audit-Publish (WAP)** architecture used to ensure 10
 *   **System Action:** Exponential Backoff & Retry (Built-in SDK/Service behavior).
 *   **Recovery Strategy:** **Automatic.** No manual intervention needed unless persistent (then scale up).
 
+### Failure Mode 1.3: Regional AWS Service Failure (Critical)
+*   **Services:** SQS, Firehose, Lambda (Regional)
+*   **Description:** An entire AWS region's control plane for SQS or Firehose goes down.
+*   **Resilience:**
+    *   **SQS:** Standard queues are Multi-AZ by default. High durability.
+    *   **Firehose:** Replicates data across AZs.
+    *   **Glue/Lambda:** Serverless, runs in multiple AZs.
+*   **Strategy:** **Wait.** AWS regional failures are rare and self-healing. We rely on the inherent Multi-AZ architecture. If a true Region outage occurs, the pipeline pauses until service restoration. No data is lost if it was successfully ack'ed by SQS.
+
 ---
 
 ## 2. Stage: Standardized Layer (Firehose -> Iceberg Raw -> Standardized)
 
 ### Failure Mode 2.1: Schema Mismatch (Recoverable - Logic/Schema)
 *   **Description:** Incoming JSON is valid but has a new field or data type mismatch (e.g., `string` instead of `int`) that violates the rigorous Iceberg schema.
-*   **Detection:** Spark Job fails during `writeTo` or validation step.
+*   **Detection:** **Glue Job** fails during `writeTo` or validation step.
 *   **System Action:**
     *   Job marked as FAILED.
     *   **Circuit Breaker TRIPS (Status=RED)** to stop processing subsequent batches.
 *   **Recovery Strategy:** **Code/Schema Fix + Replay.**
-    *   **Diagnosis:** Support team checks the error logs/branch.
-    *   **Fix:**
-        *   *Scenario A (Evolution):* Update Iceberg Table Schema (`ALTER TABLE ... ADD COLUMN`).
-        *   *Scenario B (Bug):* Update Glue Script to handle the type casting.
-    *   **Action:** Reset Circuit Breaker (`Status=GREEN`) and Re-drive the Batch.
+    *   **Offset Handling:**
+        *   Since we use **Glue Bookmarks** or **Checkpointing**, the job knows exactly where it left off.
+        *   When the job failed, it **did not commit** the offset (bookmark) for that batch.
+        *   **On Re-Run:** The job restarts from the *same* offset/checkpoint, processing the *same* files from S3/Firehose.
+    *   **Action:**
+        1.  Fix code/schema.
+        2.  Reset Circuit Breaker (`Status=GREEN`).
+        3.  Re-drive the Step Function.
 
 ### Failure Mode 2.2: Data Quality / CDE Violation (Hard Failure - Contextual)
 *   **Description:** Data is valid format, but violates business rules (e.g., `idempotency_key` is NULL, `event_timestamp` is missing).
@@ -49,11 +61,10 @@ It also details the **Write-Audit-Publish (WAP)** architecture used to ensure 10
     *   Row is tagged as `ERROR`.
     *   Batch fails Audit -> **Circuit Breaker TRIPS**.
 *   **Recovery Strategy:** **Surgeon / Patch.**
-    *   **Diagnosis:** Identify specific bad rows in the Audit Branch.
+    *   **Offset Handling:** Same as above. The batch is treated as "failed," so offsets are not advanced.
     *   **Fix:**
-        *   *Option A (Strict):* Source system must resend valid data.
-        *   *Option B (Patch):* Support team uses `data-patcher` to manually correct the missing CDE (if inferable) and re-inject to SQS.
-        *   *Option C (Discard):* If deemed "Hard Failure", move file to "Rejected" bucket, delete row from branch, and commit the rest.
+        *   Support team uses `data-patcher` to fix specific bad files in place (or re-inject).
+    *   **Re-Drive:** Re-running the job processes the *now fixed* data.
 
 ---
 
@@ -71,37 +82,89 @@ It also details the **Write-Audit-Publish (WAP)** architecture used to ensure 10
 
 ## 4. Architecture Pattern: Write-Audit-Publish (WAP)
 
-To achieve **100% compliance** and zero-touch failures, we utilize the WAP pattern supported by **Iceberg V2** on AWS Glue/EMR.
+To achieve **100% compliance** and zero-touch failures, we utilize the WAP pattern supported by **Iceberg V2** on **AWS Glue**.
 
 ### 4.1 Support Matrix
-*   **Platform:** AWS Glue 4.0+ / EMR 6.x+ (Spark 3.3+)
-*   **Format:** Apache Iceberg V2
-*   **Feature:** Branching & Tagging
+*   **Compute:** AWS Glue 4.0+ (Spark 3.3+). **No EMR required.**
+*   **Storage:** S3 (Iceberg V2 Format).
+*   **Feature:** Branching & Tagging.
 
-### 4.2 The Workflow
-1.  **Write (Staging):**
-    *   Instead of writing to `main`, the job creates a branch: `audit_batch_<id>`.
-    *   `df.writeTo("glue_catalog.db.table").option("branch", "audit_batch_<id>").append()`
-    *   Data is durable on S3 but invisible to consumers.
-
+### 4.2 The Happy Path Workflow
+1.  **Write (Staging):** Glue Job creates a branch `audit_batch_<id>` and writes results there.
+    *   *Note on Offsets:* The job reads input files based on the last successful bookmark.
 2.  **Audit (Validation):**
-    *   A validation task runs queries against the branch.
-    *   `SELECT count(*) FROM table VERSION AS OF 'audit_batch_<id>' WHERE invalid_flag = true`
-    *   **If Bad Count > 0:**
-        *   **Trip Circuit Breaker (DynamoDB).**
-        *   Do NOT merge.
-        *   Trigger PagerDuty/SNS.
+    *   **Execution:** A lightweight **Glue Task** (or python shell job) runs immediately after the write.
+    *   **Logic:** `SELECT count(*) FROM table VERSION AS OF 'audit_batch_<id>' WHERE invalid_flag = true`
+3.  **Publish (Commit):** If validation passes, performing a fast-forward merge to `main`.
+    *   **Commit Offset:** Only *after* the WAP commit succeeds do we mark the Job Bookmark as "processed."
 
-3.  **Publish (Commit):**
-    *   **If Bad Count == 0:**
-    *   Perform a fast-foward merge.
-    *   `CALL glue_catalog.system.fast_forward('db.table', 'main', 'audit_batch_<id>')`
-    *   Remove branch.
+### 4.3 The Recovery Logic (Abandon & Retry)
+When a batch fails the Audit step, we do NOT try to "fix" the branch. We **abandon** it and **retry** the process from the start.
 
-### 4.3 Why this works for us
-*   **Isolation:** Bad data never pollutes the production view.
-*   **Debuggability:** Support teams can query the failed branch to see *exactly* what broke without parsing raw logs.
-*   **Atomicity:** The "Publish" is a metadata swap, ensuring all consumers see the batch appear instantly and completely.
+1.  **Branch Freeze:** The failed branch `audit_batch_failed_1` is left untouched using `retention` settings.
+2.  **Circuit Breaker:** Logic stops.
+3.  **Remediation:** Fix data/code.
+4.  **Re-Run:**
+    *   Restart the Glue Job.
+    *   Because the bookmark was never advanced, Glue **re-reads the exact same input files**.
+    *   It creates a **NEW** branch: `audit_batch_retry_1`.
+5.  **Commit:** `audit_batch_retry_1` -> `main`. Old branch is ignored/deleted by cleanup policy.
+
+### 4.4 Deep Dive: Offset Management & Loop Prevention
+**Question:** If the job failed and we didn't advance the offset, won't the re-run pick up the **same bad record** and fail again (infinite loop)?
+
+**Answer:** Yes, it picks up the same record. The "Loop" is broken by **changing the state of that record** before the re-run.
+
+*   **Scenario:** A batch contains 10,000 records. 1 record is "Bad" (causes Audit Failure in Branch A).
+*   **Remediation:**
+    1.  **Patcher:** Support team extracts bad record, fixes it, re-injects to SQS (Record lands in *future* batch).
+    2.  **Clean Up:** Support team issues a `DELETE` against the Raw table for the bad `message_id`.
+        *   `DELETE FROM raw_table WHERE message_id = 'bad_1'`
+        *   This creates a new Snapshot in the Raw table.
+*   **Re-Run:**
+    1.  Glue job starts with *old* offset. checks for new data.
+    2.  It sees the original raw files (Offset N).
+    3.  Crucially, it reads the data *as of Current Snapshot*.
+    4.  Because of the `DELETE`, the "Bad Record" is filtered out by Iceberg reader.
+    5.  The job processes 9,999 records.
+    6.  **Success!** Branch B passes Audit. WAP Commit. Offset updates.
+*   **Result:** 100% compliance. Bad record removed (to be re-processed correctly in next batch), Good records committed. Infinite loop avoided.
+
+---
+
+## 5. Tool Walkthrough: The Data Patcher
+
+The `data-patcher` is a specific CLI tool for the support team.
+
+### 5.1 Technology Specs
+*   **Language:** Python 3.9+ (Boto3).
+*   **Environment:** Runs on a dedicated **EC2 Bastion Host** or admin's local machine (with IAM roles). Can also be deployed as a **Lambda Function** for automated fixes.
+*   **Permissions:** Needs S3 Read/Write and SQS SendMessage.
+
+### 5.2 Scenario & Workflow
+A batch failed because one file contained a special character.
+
+**1. Inspect (Diagnosis)**
+```bash
+$ data-patcher inspect s3://bucket/path/to/bad_file.json
+> Found unprintable character '\x1F' at line 1402.
+```
+
+**2. Sanitize and Re-Wrap (The Fix)**
+Crucially, the tool **extracts the original metadata** (`messageId`, `idempotency_key`) before creating the new payload.
+```bash
+$ data-patcher secure-clean s3://bucket/path/to/bad_file.json --remove-chars "\x1F" --re-inject-queue production-queue
+> Injecting to SQS with attributes:
+>   - is_replay: true
+>   - original_message_id: 550e8400...
+>   - idempotency_key: [preserved]
+```
+
+**3. Resume (The Re-Drive)**
+```bash
+$ data-patcher resume-pipeline --pipeline standard_ingest
+> Circuit Breaker Reset (Status=GREEN). Triggering Step Function.
+```
 
 ---
 
