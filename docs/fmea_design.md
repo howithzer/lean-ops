@@ -134,7 +134,18 @@ When a batch fails the Audit step, we do NOT try to "fix" the branch. We **aband
 **Why this is safer:**
 *   **Immutability:** Raw data is never deleted.
 *   **Idempotency:** We keep the original Business ID (`GCP_123`).
-*   **loop-prevention:** The filter is smart enough to block the bad copy and allow the good copy.
+*   **Loop Prevention:** The filter block smart enough to block the bad copy and allow the good copy.
+
+### 4.5 Performance Optimization for Quarantine
+**Concern:** Scanning the Quarantine table every 15 minutes could be inefficient.
+
+**Optimization Strategy:**
+1.  **Keep it Small (TTL):** We enable **DynamoDB Time-To-Live (TTL)** on the Quarantine Table. Entries automatically expire after **30 days**.
+    *   *Rationale:* If a batch hasn't been fixed in 30 days, it's likely abandoned. This keeps the table size small (< 10 MB).
+2.  **Broadcast Join:**
+    *   Since the table is kept small, Spark performs a **Broadcast Join** (sends the small list to all executors).
+    *   *Impact:* This operation takes **milliseconds** and avoids checking DynamoDB for every single row (which would be slow).
+3.  **Result:** The performance penalty is negligible (Projected: < 2 seconds added to job time) while maintaining 100% compliance logic.
 
 ---
 
