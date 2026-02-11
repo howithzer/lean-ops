@@ -115,25 +115,26 @@ When a batch fails the Audit step, we do NOT try to "fix" the branch. We **aband
 
 **Solution:** We use a **Quarantine Table (DynamoDB)** to virtually "mask" bad records during processing.
 
-1.  **The Failure:** Job fails on Record X. Circuit Breaker Trips.
-2.  **The Fix (Support Action):**
-    *   Inspect Record X.
-    *   **Action:** Add `message_id` of Record X to `QuarantineTable` in DynamoDB with reason "Malformatted JSON - 2024-02-10".
-    *   *Note:* The Raw record in S3/Iceberg remains untouched (Immutable).
+1.  **The Failure:** Job fails on Record X (ID: `GCP_123`). Circuit Breaker trips.
+2.  **The Fix (Quarantine):**
+    *   Support adds `GCP_123` to `QuarantineTable`.
+    *   *Raw Data is untouched.*
 3.  **The Re-Run (Glue Logic):**
     *   Job starts. Reads offsets N..M.
-    *   **Filtering Step:** The job performs a check against the `QuarantineTable` (or broadcasts the list if small).
-    *   `df_clean = df_raw.join(quarantine, "message_id", "left_anti")`
-    *   **Result:** Glue *sees* Review X but *excludes* it from processing.
-    *   The batch passes Audit. WAP Commit succeeds.
-4.  **Re-Injection:**
-    *   Support uses `data-patcher` to fix and re-inject Record X as a *new* message (new ID, old functional keys).
-    *   This new message is picked up in a *future* batch.
+    *   **Filtering Step:**
+        *   `df_clean = df_raw.filter(NOT (id IN Quarantine AND is_replay == false))`
+        *   *Meaning:* Block the ID *unless* it's marked as a fixed replay.
+    *   **Result:** The original bad record (no flag) is skipped. The batch passes.
+4.  **Re-Injection (The Patch):**
+    *   Support uses `data-patcher` to fix payload and re-inject.
+    *   **Crucial:** The Patcher adds `is_replay: true` to the body/metadata.
+    *   This new record (`GCP_123`, `is_replay=true`) lands in a *future* batch.
+    *   Because of the flag, it **Bypasses** the quarantine filter and is processed successfully.
 
 **Why this is safer:**
 *   **Immutability:** Raw data is never deleted.
-*   **Audit Trail:** The DynamoDB table is a permanent log of "Skipped Records."
-*   **Safety:** No risk of accidental bulk deletes via SQL.
+*   **Idempotency:** We keep the original Business ID (`GCP_123`).
+*   **loop-prevention:** The filter is smart enough to block the bad copy and allow the good copy.
 
 ---
 
