@@ -95,7 +95,7 @@ _OPENAPI_TO_ICEBERG: dict[tuple[str, Optional[str]], str] = {
     ("string",  "uri"):        "STRING",
     ("string",  "password"):   "STRING",
     ("integer", None):         "BIGINT",
-    ("integer", "int32"):      "INT",
+    ("integer", "int32"):      "BIGINT",    # Default to BIGINT to accommodate varying payload sizes
     ("integer", "int64"):      "BIGINT",
     ("number",  None):         "DOUBLE",
     ("number",  "float"):      "FLOAT",
@@ -108,9 +108,13 @@ _OPENAPI_TO_ICEBERG: dict[tuple[str, Optional[str]], str] = {
 # Envelope columns always prepended to every STD table
 # These come from the RAW layer and are not in the swagger contract
 _ENVELOPE_COLUMNS: list[tuple[str, str]] = [
-    ("ingest_uuid",    "STRING"),
-    ("gcp_publish_ts", "TIMESTAMP"),
-    ("_std_loaded_at", "TIMESTAMP"),
+    ("message_id",       "STRING"),
+    ("publish_time",     "TIMESTAMP"),
+    ("idempotency_key",  "STRING"),
+    ("period_reference", "STRING"),
+    ("ingest_uuid",      "STRING"),
+    ("gcp_publish_ts",   "TIMESTAMP"),
+    ("_std_loaded_at",   "TIMESTAMP"),
 ]
 
 
@@ -422,6 +426,7 @@ def _build_create_table_ddl(
 CREATE TABLE {database}.{table_name} (
   {all_col_defs}
 )
+PARTITIONED BY (period_reference, days(publish_time))
 LOCATION '{s3_location}'
 TBLPROPERTIES (
   'table_type'         = 'ICEBERG',

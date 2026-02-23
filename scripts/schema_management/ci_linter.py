@@ -429,6 +429,10 @@ def _log_cd_preview(
                 defn.get("format"),
                 defn.get("items"),
             )
+            # Default int32 to BIGINT in preview as well if cd_deployer misses it during mock load
+            if defn.get("type") == "integer" and defn.get("format") == "int32":
+                 iceberg_type = "BIGINT"
+
             cols.append({
                 "name": name,
                 "iceberg_type": iceberg_type,
