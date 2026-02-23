@@ -1,0 +1,30 @@
+openapi: "3.0.0"
+info:
+  title: Nested Topic Contract
+  version: "1.0.0"
+
+components:
+  schemas:
+    NestedEvent:
+      required:
+        - event_id
+        - user
+      properties:
+        event_id:
+          type: string
+          description: "Unique event ID"
+        user:
+          type: object
+          description: "Nested user object"
+          properties:
+            first_name:
+              type: string
+            last_name:
+              type: string
+            contact_info:
+              type: object
+              properties:
+                email:
+                  type: string
+                phone:
+                  type: string

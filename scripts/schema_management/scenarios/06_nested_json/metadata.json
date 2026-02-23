@@ -1,0 +1,7 @@
+{
+    "source_topics": [
+        "topic_nested_v1"
+    ],
+    "target_std_table": "std_nested",
+    "sensitive_columns": []
+}

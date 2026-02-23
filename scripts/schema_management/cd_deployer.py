@@ -186,13 +186,28 @@ def _extract_columns(swagger: dict) -> list[dict]:
     properties = model_def.get("properties", {})
     required_fields = set(model_def.get("required", []))
 
-    columns = []
-    for field_name, field_def in properties.items():
-        # Resolve same-document $ref
-        if "$ref" in field_def:
-            ref_key = field_def["$ref"].split("/")[-1]
-            field_def = schemas.get(ref_key, field_def)
+    def _flatten_swagger_props(props: dict, prefix: str = "") -> dict:
+        flattened = {}
+        for k, v in props.items():
+            new_key = f"{prefix}_{k}" if prefix else k
+            new_key = new_key.replace("-", "_").replace(".", "_").lower()
 
+            # Resolve same-document $ref before checking if it's an object
+            field_def = v
+            if "$ref" in field_def:
+                ref_key = field_def["$ref"].split("/")[-1]
+                field_def = schemas.get(ref_key, field_def)
+
+            if field_def.get("type") == "object" and "properties" in field_def:
+                flattened.update(_flatten_swagger_props(field_def["properties"], new_key))
+            else:
+                flattened[new_key] = field_def
+        return flattened
+
+    flat_properties = _flatten_swagger_props(properties)
+
+    columns = []
+    for field_name, field_def in flat_properties.items():
         iceberg_type = _openapi_to_iceberg(
             field_def.get("type", "string"),
             field_def.get("format"),
@@ -202,10 +217,10 @@ def _extract_columns(swagger: dict) -> list[dict]:
             "name":         field_name,
             "iceberg_type": iceberg_type,
             "comment":      field_def.get("description", ""),
-            "required":     field_name in required_fields,
+            "required":     field_name in required_fields, # Note: Deep required resolution done in linter
         })
 
-    log.info("Extracted %d payload columns from swagger model '%s'.", len(columns), model_name)
+    log.info("Extracted %d flattened payload columns from swagger model '%s'.", len(columns), model_name)
     return columns
 
 
