@@ -1,0 +1,36 @@
+openapi: "3.0.0"
+info:
+  title: Trades Topic Contract - BROKEN
+  version: "BAD"
+# Scenario 05c - SHOULD FAIL: new required field added
+# instrument_type added as required. Existing records have no value for it.
+# Expected result: FAIL - NEW REQUIRED FIELD: instrument_type
+
+components:
+  schemas:
+    Trade:
+      required:
+        - trade_id
+        - trader_name
+        - trade_ts
+        - instrument_type
+      properties:
+        trade_id:
+          type: string
+        trader_name:
+          type: string
+        ssn:
+          type: string
+        amount:
+          type: number
+          format: double
+        currency:
+          type: string
+        credit_card:
+          type: string
+        trade_ts:
+          type: string
+          format: date-time
+        instrument_type:
+          type: string
+          description: "BREAKING - added as required"

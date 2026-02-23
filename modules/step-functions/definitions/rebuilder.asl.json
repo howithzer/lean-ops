@@ -1,0 +1,78 @@
+{
+    "Comment": "Historical Rebuilder: Pauses main pipeline for a topic, rebuilds full table history from raw, then unpauses.",
+    "StartAt": "PausePipelineForTopic",
+    "States": {
+        "PausePipelineForTopic": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Parameters": {
+                "TableName": "${pipeline_registry_table}",
+                "Key": {
+                    "topic_name": {
+                        "S.$": "$.target_std_table"
+                    }
+                },
+                "UpdateExpression": "SET flow_control_flag = :val",
+                "ExpressionAttributeValues": {
+                    ":val": {
+                        "S": "PAUSED"
+                    }
+                }
+            },
+            "ResultPath": "$.PauseResult",
+            "Next": "RunHistoricalRebuilderJob"
+        },
+        "RunHistoricalRebuilderJob": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::glue:startJobRun.sync",
+            "Parameters": {
+                "JobName": "${rebuilder_job_name}",
+                "Arguments": {
+                    "--target_std_table.$": "$.target_std_table",
+                    "--source_topics.$": "States.JsonToString($.source_topics)",
+                    "--raw_database": "${raw_database}",
+                    "--standardized_database": "${standardized_database}",
+                    "--checkpoint_table": "${checkpoint_table}",
+                    "--iceberg_bucket": "${iceberg_bucket}"
+                }
+            },
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "FailExecutionKeepPaused"
+                }
+            ],
+            "ResultPath": "$.JobResult",
+            "Next": "UnpausePipelineForTopic"
+        },
+        "UnpausePipelineForTopic": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Parameters": {
+                "TableName": "${pipeline_registry_table}",
+                "Key": {
+                    "topic_name": {
+                        "S.$": "$.target_std_table"
+                    }
+                },
+                "UpdateExpression": "SET flow_control_flag = :val",
+                "ExpressionAttributeValues": {
+                    ":val": {
+                        "S": "ENABLED"
+                    }
+                }
+            },
+            "Next": "RebuildComplete"
+        },
+        "FailExecutionKeepPaused": {
+            "Type": "Fail",
+            "Error": "RebuilderJobFailed",
+            "Cause": "The Historical Rebuilder Glue Job failed. Pipeline remains PAUSED for manual intervention."
+        },
+        "RebuildComplete": {
+            "Type": "Succeed"
+        }
+    }
+}

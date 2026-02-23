@@ -1,0 +1,41 @@
+openapi: "3.0.0"
+info:
+  title: Options Topic Contract
+  version: "1.0.0"
+# Scenario 01 - NEW TABLE
+# No v1 exists on main. Run linter with --first-deploy flag.
+# Expected result: PASS - NEW TABLE operation classified.
+# CD preview: CREATE TABLE standardized.std_options (7 columns)
+
+components:
+  schemas:
+    OptionsContract:
+      required:
+        - contract_id
+        - underlying_ticker
+        - expiry_date
+      properties:
+        contract_id:
+          type: string
+          description: "Unique options contract identifier."
+        underlying_ticker:
+          type: string
+          description: "Ticker symbol of the underlying asset."
+        option_type:
+          type: string
+          description: "CALL or PUT."
+        strike_price:
+          type: number
+          format: double
+          description: "Strike price of the option."
+        expiry_date:
+          type: string
+          format: date
+          description: "Contract expiry date."
+        premium:
+          type: number
+          format: double
+          description: "Option premium paid."
+        trader_ssn:
+          type: string
+          description: "Trader SSN. SENSITIVE - SHA-256 hashed."

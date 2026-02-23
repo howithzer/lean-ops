@@ -1,0 +1,32 @@
+openapi: "3.0.0"
+info:
+  title: Trades Topic Contract - BROKEN
+  version: "BAD"
+# Scenario 05b - SHOULD FAIL: type change
+# amount changed from number to string. Catastrophic for downstream.
+# Expected result: FAIL - TYPE CHANGE on amount
+
+components:
+  schemas:
+    Trade:
+      required:
+        - trade_id
+        - trader_name
+        - trade_ts
+      properties:
+        trade_id:
+          type: string
+        trader_name:
+          type: string
+        ssn:
+          type: string
+        amount:
+          type: string
+          description: "BROKEN - was number/double, now string"
+        currency:
+          type: string
+        credit_card:
+          type: string
+        trade_ts:
+          type: string
+          format: date-time

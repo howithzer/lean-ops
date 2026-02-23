@@ -1,0 +1,124 @@
+{
+    "Comment": "Master Orchestrator: Dynamically runs Standardized and Curated Glue Jobs for all active topics.",
+    "StartAt": "CheckForOverlappingExecution",
+    "States": {
+        "CheckForOverlappingExecution": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:sfn:listExecutions",
+            "Parameters": {
+                "StateMachineArn": "${state_machine_arn}",
+                "StatusFilter": "RUNNING"
+            },
+            "ResultSelector": {
+                "RunningCount.$": "States.ArrayLength($.Executions)"
+            },
+            "ResultPath": "$.ExecutionCheck",
+            "Next": "IsAlreadyRunning"
+        },
+        "IsAlreadyRunning": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.ExecutionCheck.RunningCount",
+                    "NumericGreaterThan": 1,
+                    "Next": "SkipExecution"
+                }
+            ],
+            "Default": "FetchActiveTopics"
+        },
+        "SkipExecution": {
+            "Type": "Succeed",
+            "Comment": "Another execution is still running. Skipping to prevent overlap."
+        },
+        "FetchActiveTopics": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+                "FunctionName": "${fetch_topics_lambda_arn}"
+            },
+            "ResultSelector": {
+                "topics.$": "$.Payload.topics"
+            },
+            "ResultPath": "$.ActiveTopics",
+            "Next": "ProcessTopicsInParallel"
+        },
+        "ProcessTopicsInParallel": {
+            "Type": "Map",
+            "ItemsPath": "$.ActiveTopics.topics",
+            "ItemSelector": {
+                "topic_name.$": "$$.Map.Item.Value"
+            },
+            "MaxConcurrency": 30,
+            "ToleratedFailurePercentage": 100,
+            "ResultPath": "$.MapResults",
+            "ItemProcessor": {
+                "ProcessorConfig": {
+                    "Mode": "DISTRIBUTED",
+                    "ExecutionType": "STANDARD"
+                },
+                "StartAt": "RunStandardizedJob",
+                "States": {
+                    "RunStandardizedJob": {
+                        "Type": "Task",
+                        "Resource": "arn:aws:states:::glue:startJobRun.sync",
+                        "Parameters": {
+                            "JobName": "${standardized_job_name}",
+                            "Arguments": {
+                                "--topic_name.$": "$.topic_name",
+                                "--raw_database": "${raw_database}",
+                                "--standardized_database": "${standardized_database}",
+                                "--checkpoint_table": "${checkpoint_table}",
+                                "--iceberg_bucket": "${iceberg_bucket}"
+                            }
+                        },
+                        "Catch": [
+                            {
+                                "ErrorEquals": [
+                                    "States.ALL"
+                                ],
+                                "Next": "HandleJobFailure"
+                            }
+                        ],
+                        "Next": "RunCuratedJob"
+                    },
+                    "RunCuratedJob": {
+                        "Type": "Task",
+                        "Resource": "arn:aws:states:::glue:startJobRun.sync",
+                        "Parameters": {
+                            "JobName": "${curated_job_name}",
+                            "Arguments": {
+                                "--topic_name.$": "$.topic_name",
+                                "--standardized_database": "${standardized_database}",
+                                "--curated_database": "${curated_database}",
+                                "--checkpoint_table": "${checkpoint_table}",
+                                "--iceberg_bucket": "${iceberg_bucket}",
+                                "--schema_bucket": "${schema_bucket}"
+                            }
+                        },
+                        "Catch": [
+                            {
+                                "ErrorEquals": [
+                                    "States.ALL"
+                                ],
+                                "Next": "HandleJobFailure"
+                            }
+                        ],
+                        "Next": "TopicProcessingComplete"
+                    },
+                    "HandleJobFailure": {
+                        "Type": "Fail",
+                        "Error": "JobFailed",
+                        "Cause": "Either Standardized or Curated Glue job failed for this topic."
+                    },
+                    "TopicProcessingComplete": {
+                        "Type": "Succeed"
+                    }
+                }
+            },
+            "Next": "OrchestratorComplete"
+        },
+        "OrchestratorComplete": {
+            "Type": "Succeed"
+        }
+    }
+}

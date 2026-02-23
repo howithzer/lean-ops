@@ -1,0 +1,43 @@
+openapi: "3.0.0"
+info:
+  title: Trades Topic Contract
+  version: "2.1.0"
+# Scenario 04 - PURE REMAP
+# v1 is shared/swagger_v1.yaml.
+# The schema here is IDENTICAL to v1 - no field changes at all.
+# GCP PubSub forced a new topic name (topic_trades_v2) but the payload
+# contract is unchanged. Only the routing table needs updating.
+# Expected result: PASS - PURE_REMAP
+# CD preview: Zero DDL. Topic routing update only.
+
+components:
+  schemas:
+    Trade:
+      required:
+        - trade_id
+        - trader_name
+        - trade_ts
+      properties:
+        trade_id:
+          type: string
+          description: "Unique identifier for the trade."
+        trader_name:
+          type: string
+          description: "Full name of the executing trader."
+        ssn:
+          type: string
+          description: "Trader SSN. SENSITIVE - SHA-256 hashed."
+        amount:
+          type: number
+          format: double
+          description: "Notional trade amount."
+        currency:
+          type: string
+          description: "ISO 4217 currency code."
+        credit_card:
+          type: string
+          description: "Credit card number. SENSITIVE - SHA-256 hashed."
+        trade_ts:
+          type: string
+          format: date-time
+          description: "ISO 8601 timestamp of trade execution."

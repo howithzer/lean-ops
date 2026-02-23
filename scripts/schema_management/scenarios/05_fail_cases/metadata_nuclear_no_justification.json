@@ -1,0 +1,13 @@
+{
+  "source_topics": [
+    "topic_trades_v3"
+  ],
+  "target_std_table": "std_trades",
+  "sensitive_columns": [
+    "ssn",
+    "credit_card"
+  ],
+  "nuclear_reset": true,
+  "nuclear_justification": "",
+  "impact_assessment": ""
+}

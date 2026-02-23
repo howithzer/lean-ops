@@ -1,0 +1,13 @@
+{
+  "source_topics": [
+    "topic_trades_v3"
+  ],
+  "target_std_table": "std_trades",
+  "sensitive_columns": [
+    "ssn",
+    "credit_card"
+  ],
+  "nuclear_reset": true,
+  "nuclear_justification": "Producer breaking redesign Q1 2024. amount and currency fields removed and consolidated into notional_value (USD-normalised). instrument_type required by new risk framework.",
+  "impact_assessment": "Historical data preserved in std_trades_archive_<ts>. Rebuilder job will re-parse RAW history against new schema. Downstream dashboards must be updated to use notional_value instead of amount."
+}

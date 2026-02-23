@@ -1,0 +1,12 @@
+{
+  "source_topics": [
+    "topic_options_v1"
+  ],
+  "target_std_table": "std_options",
+  "sensitive_columns": [
+    "trader_ssn"
+  ],
+  "nuclear_reset": false,
+  "nuclear_justification": "",
+  "impact_assessment": ""
+}

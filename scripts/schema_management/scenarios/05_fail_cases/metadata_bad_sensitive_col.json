@@ -1,0 +1,12 @@
+{
+  "source_topics": [
+    "topic_trades_v2"
+  ],
+  "target_std_table": "std_trades",
+  "sensitive_columns": [
+    "ssn",
+    "credit_card",
+    "passport_number"
+  ],
+  "nuclear_reset": false
+}

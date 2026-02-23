@@ -287,3 +287,58 @@ output "alerts_topic_arn" {
   description = "SNS alerts topic ARN"
   value       = module.observability.alerts_topic_arn
 }
+# =============================================================================
+# MODULE: PIPELINE REGISTRY (DynamoDB)
+# =============================================================================
+
+module "pipeline_registry" {
+  source = "./modules/dynamodb"
+
+  environment = var.environment
+  tags        = local.common_tags
+}
+
+# =============================================================================
+# MODULE: ORCHESTRATION LAMBDA (Depends on Registry)
+# =============================================================================
+
+module "orchestration_lambda" {
+  source = "./modules/orchestration-lambda"
+
+  environment            = var.environment
+  pipeline_registry_arn  = module.pipeline_registry.table_arn
+  pipeline_registry_name = module.pipeline_registry.table_name
+  tags                   = local.common_tags
+
+  depends_on = [module.pipeline_registry]
+}
+
+# =============================================================================
+# MODULE: MASTER ORCHESTRATOR STEP FUNCTIONS (Depends on Lambda & Registry)
+# =============================================================================
+
+module "step_functions" {
+  source = "./modules/step-functions"
+
+  environment                   = var.environment
+  fetch_topics_lambda_arn       = module.orchestration_lambda.function_arn
+  pipeline_registry_table       = module.pipeline_registry.table_name
+  
+  # Inject the Glue Job Names created by module.compute or module.orchestration
+  # NOTE: Assuming these are established in orchestration/compute module outputs
+  standardized_job_name         = "standardized_processor"
+  curated_job_name              = "curated_processor"
+  historical_rebuilder_job_name = "historical_rebuilder"
+
+  # Catalog & State references
+  raw_database                  = module.catalog.raw_database_name
+  standardized_database         = module.catalog.standardized_database_name
+  curated_database              = module.catalog.curated_database_name
+  checkpoint_table              = module.state.checkpoints_table_name
+  iceberg_bucket                = var.iceberg_bucket
+  schema_bucket                 = var.schema_bucket
+  
+  tags                          = local.common_tags
+
+  depends_on = [module.orchestration_lambda, module.pipeline_registry]
+}

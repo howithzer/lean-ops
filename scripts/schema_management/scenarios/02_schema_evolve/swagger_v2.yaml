@@ -1,0 +1,53 @@
+openapi: "3.0.0"
+info:
+  title: Trades Topic Contract
+  version: "2.0.0"
+# Scenario 02 - SCHEMA EVOLVE (additive, no breaking changes)
+# v1 is shared/swagger_v1.yaml (7 fields).
+# This v2 adds 3 new OPTIONAL fields and widens one numeric format.
+# Expected result: PASS - SCHEMA_EVOLVE
+# CD preview: ALTER TABLE ADD COLUMNS settlement_date, counterparty_id, risk_score
+
+components:
+  schemas:
+    Trade:
+      required:
+        - trade_id
+        - trader_name
+        - trade_ts
+      properties:
+        trade_id:
+          type: string
+          description: "Unique identifier for the trade."
+        trader_name:
+          type: string
+          description: "Full name of the executing trader."
+        ssn:
+          type: string
+          description: "Trader SSN. SENSITIVE - SHA-256 hashed."
+        amount:
+          type: number
+          format: double
+          description: "Notional trade amount."
+        currency:
+          type: string
+          description: "ISO 4217 currency code."
+        credit_card:
+          type: string
+          description: "Credit card number. SENSITIVE - SHA-256 hashed."
+        trade_ts:
+          type: string
+          format: date-time
+          description: "ISO 8601 timestamp of trade execution."
+        # NEW OPTIONAL FIELDS - these are safe additive changes
+        settlement_date:
+          type: string
+          format: date
+          description: "Date the trade settles. Optional - not all trades have this."
+        counterparty_id:
+          type: string
+          description: "Identifier of the counterparty. Optional."
+        risk_score:
+          type: number
+          format: double
+          description: "Computed risk score 0.0 to 1.0. Optional."

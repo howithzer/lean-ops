@@ -463,7 +463,7 @@ resource "aws_glue_catalog_database" "curated" {
 # OUTPUTS
 # =============================================================================
 
-output "database_name" {
+output "raw_database_name" {
   description = "Glue database name"
   value       = aws_glue_catalog_database.raw.name
 }

@@ -6,7 +6,8 @@ A scalable, fail-aware data platform designed to ingest high-velocity IoT sensor
 
 ✅ **Robust Ingestion**: SQS → Lambda → Firehose handles 700+ topics with FIFO/LIFO dedup.
 ✅ **Snapshot-Based Processing**: Incremental reads using Iceberg snapshots, not just timestamps.
-✅ **Schema Evolution**: Automatically handles new columns (drift) in Curated layer.
+✅ **Schema Evolution & Management**: Automated schema validation (Linter), deployment, and dynamic evolution.
+✅ **Step Functions Orchestration**: Dynamic Master Pipeline Orchestrator and Historical Rebuilder for breaking schema changes.
 ✅ **Error Injection Framework**: Production-grade generator for testing scenarios (duplicates, late arrivals, schema drift, CDE violations).
 ✅ **Verified Reliability**: 
    - **Parse Errors**: 100% capture of malformed JSON.
@@ -43,13 +44,19 @@ EKS Pods (700+ topics)
          │
          ▼
 ┌────────────────────────────────────────────────────────────────────┐
-│                    PROCESSING LAYER (Step Functions)                    │
-│  GetAllCheckpoints → Glue Job → Update Checkpoint                        │
-│  ┌──────────────────┐    ┌──────────────────┐                           │
-│  │ Standardized     │    │ Curated Layer    │                           │
-│  │ (dedup/flatten)  │    │ (typed/governed) │                           │
-│  └──────────────────┘    └──────────────────┘                           │
-└────────────────────────────────────────────────────────────────────────┘
+│                    PROCESSING LAYER (Step Functions)               │
+│  Master Pipeline Orchestrator (15m Schedule)                       │
+│  DynamoDB Registry → Map State (Concurrency: 30)                   │
+│                                                                    │
+│  Per-Topic Branch:                                                 │
+│  ┌──────────────────┐    ┌──────────────────┐                      │
+│  │ Standardized Job │───▶│ Curated Job      │                      │
+│  │ (dedup/flatten)  │    │ (typed/governed) │                      │
+│  └──────────────────┘    └──────────────────┘                      │
+│                                                                    │
+│  Historical Rebuilder (Triggered by Schema Deployer)               │
+│  DynamoDB Pause → Full RAW Scan → Re-flatten → Unpause             │
+└────────────────────────────────────────────────────────────────────┘
          │
          ▼
     Snowflake (External Managed Iceberg Table)
@@ -178,7 +185,9 @@ See `tests/TEST_PLAN.md` for end-to-end test scenarios.
 | `docs/ROADMAP.md` | Upcoming features (Wave 4-6) |
 | `docs/operations_plan.md` | Operational runbook |
 | `docs/layer_definitions.md` | RAW/Curated/Semantic layer specs |
-| `docs/lessons_learned_curated.md` | **NEW**: CDE Validation & Error Injection learnings |
+| `docs/step_functions_architecture.md` | Detailed architecture of Master Orchestrator and Historical Rebuilder |
+| `docs/schema_management_integration.md` | Pipeline explanation of CI Linter and CD Deployer integration |
+| `docs/lessons_learned_curated.md` | CDE Validation & Error Injection learnings |
 | `architecture_feedback/comprehensive_feedback.md` | Step Function design |
 | `architecture_feedback/snowflake_iceberg_recommendation.md` | Snowflake integration guide |
 
