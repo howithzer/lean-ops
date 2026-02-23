@@ -370,6 +370,7 @@ def _log_cd_preview(
     target_table: str,
     v1_props: dict,
     v2_props: dict,
+    sensitive_columns: list[str],
     nuclear_justification: str = "",
 ) -> None:
     """Log a human-readable preview of what the CD deployer will execute."""
@@ -388,7 +389,12 @@ def _log_cd_preview(
                 target_table, len(v2_props),
             )
         elif operation == "SCHEMA_EVOLVE":
-            new_cols = sorted(set(v2_props) - set(v1_props))
+            # Rough approximation if cd_deployer fails to import
+            new_cols = []
+            for c in sorted(set(v2_props) - set(v1_props)):
+                new_cols.append(c)
+                if c in sensitive_columns:
+                    new_cols.append(f"{c}_raw")
             if new_cols:
                 log.info(
                     "  ALTER TABLE standardized.%s ADD COLUMNS: %s",
@@ -424,21 +430,27 @@ def _log_cd_preview(
         # Translates our properties map back up to mock an extracted columns map
         cols = []
         for name, defn in props.items():
-            iceberg_type = cd_deployer._openapi_to_iceberg(
-                defn.get("type", "string"),
-                defn.get("format"),
-                defn.get("items"),
-            )
-            # Default int32 to BIGINT in preview as well if cd_deployer misses it during mock load
-            if defn.get("type") == "integer" and defn.get("format") == "int32":
-                 iceberg_type = "BIGINT"
+            # Standardized layer is strictly STRING
+            iceberg_type = "STRING"
+            
+            comment = defn.get("description", "")
+            if name in sensitive_columns:
+                comment = f"{comment} SENSITIVE - Masked.".strip()
 
             cols.append({
                 "name": name,
                 "iceberg_type": iceberg_type,
-                "comment": defn.get("description", ""),
+                "comment": comment,
                 "required": False, # doesn't matter for DDL
             })
+            
+            if name in sensitive_columns:
+                cols.append({
+                    "name": f"{name}_raw",
+                    "iceberg_type": "STRING",
+                    "comment": f"RAW unmasked value for {name}. SENSITIVE.",
+                    "required": False,
+                })
         return cols
 
     if operation == "NEW_TABLE":
@@ -447,16 +459,21 @@ def _log_cd_preview(
         log.info("\n%s\n", ddl)
 
     elif operation == "SCHEMA_EVOLVE":
-        new_cols_names = sorted(set(v2_props) - set(v1_props))
-        if new_cols_names:
-            new_props = {k: v for k, v in v2_props.items() if k in new_cols_names}
-            cols = props_to_columns(new_props)
+        v1_cols = props_to_columns(v1_props)
+        v2_cols = props_to_columns(v2_props)
+        
+        v1_col_names = {c["name"] for c in v1_cols}
+        v2_col_names = {c["name"] for c in v2_cols}
+        
+        new_names = sorted(v2_col_names - v1_col_names)
+        if new_names:
+            cols = [c for c in v2_cols if c["name"] in new_names]
             ddl = cd_deployer._build_add_columns_ddl(database, target_table, cols)
             log.info("\n%s\n", ddl)
         else:
             log.info(
                 "  No column additions needed. "
-                "Only format widenings detected — no DDL will be executed."
+                "Only configuration changes detected — no DDL will be executed."
             )
 
     elif operation == "NUCLEAR_RESET":
@@ -543,7 +560,7 @@ class SchemaLinter:
         if self.is_first_deploy:
             log.info("")
             log.info("RESULT: PASS — First deployment. No v1 schema to compare against.")
-            _log_cd_preview("NEW_TABLE", target_table, {}, v2_props)
+            _log_cd_preview("NEW_TABLE", target_table, {}, v2_props, self.metadata.get("sensitive_columns", []))
             return 0
 
         # Step 4: Extract v1 properties
@@ -578,7 +595,7 @@ class SchemaLinter:
                 "Impact        : %s", self.metadata.get("impact_assessment", "")
             )
             _log_cd_preview(
-                operation, target_table, v1_props, v2_props,
+                operation, target_table, v1_props, v2_props, self.metadata.get("sensitive_columns", []),
                 self.metadata.get("nuclear_justification", ""),
             )
             log.info("")
@@ -587,7 +604,7 @@ class SchemaLinter:
 
         # Step 7: Pure remap — schema unchanged
         if operation == "PURE_REMAP":
-            _log_cd_preview(operation, target_table, v1_props, v2_props)
+            _log_cd_preview(operation, target_table, v1_props, v2_props, self.metadata.get("sensitive_columns", []))
             log.info("")
             log.info("RESULT: PASS — Pure topic remap. Schema unchanged.")
             return 0
@@ -601,7 +618,7 @@ class SchemaLinter:
             v1_props, v1_required, v2_props, v2_required
         )
 
-        _log_cd_preview(operation, target_table, v1_props, v2_props)
+        _log_cd_preview(operation, target_table, v1_props, v2_props, self.metadata.get("sensitive_columns", []))
 
         if breaking:
             log.error("")

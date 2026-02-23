@@ -176,11 +176,14 @@ def _load_json(path: str) -> dict:
 # Schema extraction from swagger
 # ---------------------------------------------------------------------------
 
-def _extract_columns(swagger: dict) -> list[dict]:
+def _extract_columns(swagger: dict, sensitive_columns: Optional[list[str]] = None) -> list[dict]:
     """
     Extract an ordered column list from the OpenAPI swagger.
     Returns: [{name, iceberg_type, comment, required}]
     """
+    if sensitive_columns is None:
+        sensitive_columns = []
+        
     schemas = swagger.get("components", {}).get("schemas", {})
     if not schemas:
         log.error("No 'components.schemas' found in swagger. Cannot extract columns.")
@@ -212,17 +215,27 @@ def _extract_columns(swagger: dict) -> list[dict]:
 
     columns = []
     for field_name, field_def in flat_properties.items():
-        iceberg_type = _openapi_to_iceberg(
-            field_def.get("type", "string"),
-            field_def.get("format"),
-            field_def.get("items"),
-        )
+        # Standardized layer strictly uses STRING for all payload elements to auto-drift safely
+        iceberg_type = "STRING"
+        
+        comment = field_def.get("description", "")
+        if field_name in sensitive_columns:
+            comment = f"{comment} SENSITIVE - Masked.".strip()
+            
         columns.append({
             "name":         field_name,
             "iceberg_type": iceberg_type,
-            "comment":      field_def.get("description", ""),
+            "comment":      comment,
             "required":     field_name in required_fields, # Note: Deep required resolution done in linter
         })
+        
+        if field_name in sensitive_columns:
+            columns.append({
+                "name":         f"{field_name}_raw",
+                "iceberg_type": "STRING",
+                "comment":      f"RAW unmasked value for {field_name}. SENSITIVE.",
+                "required":     False,
+            })
 
     log.info("Extracted %d flattened payload columns from swagger model '%s'.", len(columns), model_name)
     return columns
@@ -541,7 +554,7 @@ def deploy(swagger_path: str, metadata_path: str) -> None:
     log.info("Nuclear reset : %s", nuclear_reset)
 
     # ── Extract columns ────────────────────────────────────────────────────
-    columns = _extract_columns(swagger)
+    columns = _extract_columns(swagger, sensitive_columns=metadata.get("sensitive_columns", []))
 
     # ── Re-classify against live Glue state ───────────────────────────────
     # This is intentionally re-done here (not trusted from CI output)
