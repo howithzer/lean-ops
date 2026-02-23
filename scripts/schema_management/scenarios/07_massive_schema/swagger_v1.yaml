@@ -1,0 +1,584 @@
+openapi: 3.0.0
+info:
+  title: Massive Topic Contract
+  version: 1.0.0
+components:
+  schemas:
+    MassiveEvent:
+      required:
+      - flat_attr_1
+      properties:
+        flat_attr_1:
+          type: string
+          description: Level 1 flat attribute 1
+        flat_attr_2:
+          type: string
+          description: Level 1 flat attribute 2
+        flat_attr_3:
+          type: string
+          description: Level 1 flat attribute 3
+        flat_attr_4:
+          type: string
+          description: Level 1 flat attribute 4
+        flat_attr_5:
+          type: string
+          description: Level 1 flat attribute 5
+        flat_attr_6:
+          type: string
+          description: Level 1 flat attribute 6
+        flat_attr_7:
+          type: string
+          description: Level 1 flat attribute 7
+        flat_attr_8:
+          type: string
+          description: Level 1 flat attribute 8
+        flat_attr_9:
+          type: string
+          description: Level 1 flat attribute 9
+        flat_attr_10:
+          type: string
+          description: Level 1 flat attribute 10
+        flat_attr_11:
+          type: string
+          description: Level 1 flat attribute 11
+        flat_attr_12:
+          type: string
+          description: Level 1 flat attribute 12
+        flat_attr_13:
+          type: string
+          description: Level 1 flat attribute 13
+        flat_attr_14:
+          type: string
+          description: Level 1 flat attribute 14
+        flat_attr_15:
+          type: string
+          description: Level 1 flat attribute 15
+        flat_attr_16:
+          type: string
+          description: Level 1 flat attribute 16
+        flat_attr_17:
+          type: string
+          description: Level 1 flat attribute 17
+        flat_attr_18:
+          type: string
+          description: Level 1 flat attribute 18
+        flat_attr_19:
+          type: string
+          description: Level 1 flat attribute 19
+        flat_attr_20:
+          type: string
+          description: Level 1 flat attribute 20
+        flat_attr_21:
+          type: string
+          description: Level 1 flat attribute 21
+        flat_attr_22:
+          type: string
+          description: Level 1 flat attribute 22
+        flat_attr_23:
+          type: string
+          description: Level 1 flat attribute 23
+        flat_attr_24:
+          type: string
+          description: Level 1 flat attribute 24
+        flat_attr_25:
+          type: string
+          description: Level 1 flat attribute 25
+        flat_attr_26:
+          type: string
+          description: Level 1 flat attribute 26
+        flat_attr_27:
+          type: string
+          description: Level 1 flat attribute 27
+        flat_attr_28:
+          type: string
+          description: Level 1 flat attribute 28
+        flat_attr_29:
+          type: string
+          description: Level 1 flat attribute 29
+        flat_attr_30:
+          type: string
+          description: Level 1 flat attribute 30
+        flat_attr_31:
+          type: string
+          description: Level 1 flat attribute 31
+        flat_attr_32:
+          type: string
+          description: Level 1 flat attribute 32
+        flat_attr_33:
+          type: string
+          description: Level 1 flat attribute 33
+        flat_attr_34:
+          type: string
+          description: Level 1 flat attribute 34
+        flat_attr_35:
+          type: string
+          description: Level 1 flat attribute 35
+        flat_attr_36:
+          type: string
+          description: Level 1 flat attribute 36
+        flat_attr_37:
+          type: string
+          description: Level 1 flat attribute 37
+        flat_attr_38:
+          type: string
+          description: Level 1 flat attribute 38
+        flat_attr_39:
+          type: string
+          description: Level 1 flat attribute 39
+        flat_attr_40:
+          type: string
+          description: Level 1 flat attribute 40
+        flat_attr_41:
+          type: string
+          description: Level 1 flat attribute 41
+        flat_attr_42:
+          type: string
+          description: Level 1 flat attribute 42
+        flat_attr_43:
+          type: string
+          description: Level 1 flat attribute 43
+        flat_attr_44:
+          type: string
+          description: Level 1 flat attribute 44
+        flat_attr_45:
+          type: string
+          description: Level 1 flat attribute 45
+        flat_attr_46:
+          type: string
+          description: Level 1 flat attribute 46
+        flat_attr_47:
+          type: string
+          description: Level 1 flat attribute 47
+        flat_attr_48:
+          type: string
+          description: Level 1 flat attribute 48
+        flat_attr_49:
+          type: string
+          description: Level 1 flat attribute 49
+        flat_attr_50:
+          type: string
+          description: Level 1 flat attribute 50
+        nested_level_1:
+          type: object
+          properties:
+            sub_attr_1:
+              type: integer
+              format: int32
+            sub_attr_2:
+              type: integer
+              format: int32
+            sub_attr_3:
+              type: integer
+              format: int32
+            sub_attr_4:
+              type: integer
+              format: int32
+            sub_attr_5:
+              type: integer
+              format: int32
+            sub_attr_6:
+              type: integer
+              format: int32
+            sub_attr_7:
+              type: integer
+              format: int32
+            sub_attr_8:
+              type: integer
+              format: int32
+            sub_attr_9:
+              type: integer
+              format: int32
+            sub_attr_10:
+              type: integer
+              format: int32
+            sub_attr_11:
+              type: integer
+              format: int32
+            sub_attr_12:
+              type: integer
+              format: int32
+            sub_attr_13:
+              type: integer
+              format: int32
+            sub_attr_14:
+              type: integer
+              format: int32
+            sub_attr_15:
+              type: integer
+              format: int32
+            sub_attr_16:
+              type: integer
+              format: int32
+            sub_attr_17:
+              type: integer
+              format: int32
+            sub_attr_18:
+              type: integer
+              format: int32
+            sub_attr_19:
+              type: integer
+              format: int32
+            sub_attr_20:
+              type: integer
+              format: int32
+            sub_attr_21:
+              type: integer
+              format: int32
+            sub_attr_22:
+              type: integer
+              format: int32
+            sub_attr_23:
+              type: integer
+              format: int32
+            sub_attr_24:
+              type: integer
+              format: int32
+            sub_attr_25:
+              type: integer
+              format: int32
+            sub_attr_26:
+              type: integer
+              format: int32
+            sub_attr_27:
+              type: integer
+              format: int32
+            sub_attr_28:
+              type: integer
+              format: int32
+            sub_attr_29:
+              type: integer
+              format: int32
+            sub_attr_30:
+              type: integer
+              format: int32
+            sub_attr_31:
+              type: integer
+              format: int32
+            sub_attr_32:
+              type: integer
+              format: int32
+            sub_attr_33:
+              type: integer
+              format: int32
+            sub_attr_34:
+              type: integer
+              format: int32
+            sub_attr_35:
+              type: integer
+              format: int32
+            sub_attr_36:
+              type: integer
+              format: int32
+            sub_attr_37:
+              type: integer
+              format: int32
+            sub_attr_38:
+              type: integer
+              format: int32
+            sub_attr_39:
+              type: integer
+              format: int32
+            sub_attr_40:
+              type: integer
+              format: int32
+            sub_attr_41:
+              type: integer
+              format: int32
+            sub_attr_42:
+              type: integer
+              format: int32
+            sub_attr_43:
+              type: integer
+              format: int32
+            sub_attr_44:
+              type: integer
+              format: int32
+            sub_attr_45:
+              type: integer
+              format: int32
+            sub_attr_46:
+              type: integer
+              format: int32
+            sub_attr_47:
+              type: integer
+              format: int32
+            sub_attr_48:
+              type: integer
+              format: int32
+            sub_attr_49:
+              type: integer
+              format: int32
+            sub_attr_50:
+              type: integer
+              format: int32
+        deep_nested_root:
+          type: object
+          properties:
+            deep_attr_1_1:
+              type: number
+              format: double
+            deep_attr_1_2:
+              type: number
+              format: double
+            deep_attr_1_3:
+              type: number
+              format: double
+            deep_attr_1_4:
+              type: number
+              format: double
+            deep_attr_1_5:
+              type: number
+              format: double
+            deep_attr_1_6:
+              type: number
+              format: double
+            deep_attr_1_7:
+              type: number
+              format: double
+            deep_attr_1_8:
+              type: number
+              format: double
+            deep_attr_1_9:
+              type: number
+              format: double
+            deep_attr_1_10:
+              type: number
+              format: double
+            depth_1:
+              type: object
+              properties:
+                deep_attr_2_1:
+                  type: number
+                  format: double
+                deep_attr_2_2:
+                  type: number
+                  format: double
+                deep_attr_2_3:
+                  type: number
+                  format: double
+                deep_attr_2_4:
+                  type: number
+                  format: double
+                deep_attr_2_5:
+                  type: number
+                  format: double
+                deep_attr_2_6:
+                  type: number
+                  format: double
+                deep_attr_2_7:
+                  type: number
+                  format: double
+                deep_attr_2_8:
+                  type: number
+                  format: double
+                deep_attr_2_9:
+                  type: number
+                  format: double
+                deep_attr_2_10:
+                  type: number
+                  format: double
+                depth_2:
+                  type: object
+                  properties:
+                    deep_attr_3_1:
+                      type: number
+                      format: double
+                    deep_attr_3_2:
+                      type: number
+                      format: double
+                    deep_attr_3_3:
+                      type: number
+                      format: double
+                    deep_attr_3_4:
+                      type: number
+                      format: double
+                    deep_attr_3_5:
+                      type: number
+                      format: double
+                    deep_attr_3_6:
+                      type: number
+                      format: double
+                    deep_attr_3_7:
+                      type: number
+                      format: double
+                    deep_attr_3_8:
+                      type: number
+                      format: double
+                    deep_attr_3_9:
+                      type: number
+                      format: double
+                    deep_attr_3_10:
+                      type: number
+                      format: double
+                    depth_3:
+                      type: object
+                      properties:
+                        deep_attr_4_1:
+                          type: number
+                          format: double
+                        deep_attr_4_2:
+                          type: number
+                          format: double
+                        deep_attr_4_3:
+                          type: number
+                          format: double
+                        deep_attr_4_4:
+                          type: number
+                          format: double
+                        deep_attr_4_5:
+                          type: number
+                          format: double
+                        deep_attr_4_6:
+                          type: number
+                          format: double
+                        deep_attr_4_7:
+                          type: number
+                          format: double
+                        deep_attr_4_8:
+                          type: number
+                          format: double
+                        deep_attr_4_9:
+                          type: number
+                          format: double
+                        deep_attr_4_10:
+                          type: number
+                          format: double
+                        depth_4:
+                          type: object
+                          properties:
+                            deep_attr_5_1:
+                              type: number
+                              format: double
+                            deep_attr_5_2:
+                              type: number
+                              format: double
+                            deep_attr_5_3:
+                              type: number
+                              format: double
+                            deep_attr_5_4:
+                              type: number
+                              format: double
+                            deep_attr_5_5:
+                              type: number
+                              format: double
+                            deep_attr_5_6:
+                              type: number
+                              format: double
+                            deep_attr_5_7:
+                              type: number
+                              format: double
+                            deep_attr_5_8:
+                              type: number
+                              format: double
+                            deep_attr_5_9:
+                              type: number
+                              format: double
+                            deep_attr_5_10:
+                              type: number
+                              format: double
+                            depth_5:
+                              type: object
+                              properties: {}
+        weird_names_root:
+          type: object
+          properties:
+            Weird-Name.With.Dots-And-Dashes_1:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_2:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_3:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_4:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_5:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_6:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_7:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_8:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_9:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_10:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_11:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_12:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_13:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_14:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_15:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_16:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_17:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_18:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_19:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_20:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_21:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_22:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_23:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_24:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_25:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_26:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_27:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_28:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_29:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_30:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_31:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_32:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_33:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_34:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_35:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_36:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_37:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_38:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_39:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_40:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_41:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_42:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_43:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_44:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_45:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_46:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_47:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_48:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_49:
+              type: boolean
+            Weird-Name.With.Dots-And-Dashes_50:
+              type: boolean

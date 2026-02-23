@@ -1,0 +1,7 @@
+{
+    "source_topics": [
+        "topic_massive_v1"
+    ],
+    "target_std_table": "std_massive",
+    "sensitive_columns": []
+}
