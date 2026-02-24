@@ -377,6 +377,12 @@ def _log_cd_preview(
     log.info("")
     log.info("CD DEPLOYER PREVIEW — what will be executed on merge:")
     
+    std_table_name = target_table
+    cur_table_name = target_table.replace("std_", "cur_", 1) if target_table.startswith("std_") else f"cur_{target_table}"
+
+    database_std = "standardized"
+    database_cur = "curated"
+
     try:
         # Import cd_deployer internally so linter doesn't strictly depend on it 
         # for standard logic, but is used if available.
@@ -385,111 +391,68 @@ def _log_cd_preview(
         log.warning("Could not import cd_deployer. Generating standard preview instead.")
         if operation == "NEW_TABLE":
             log.info(
-                "  CREATE TABLE standardized.%s with %d columns from swagger.",
-                target_table, len(v2_props),
+                "  CREATE TABLES standardized.%s and curated.%s with %d columns from swagger.",
+                std_table_name, cur_table_name, len(v2_props),
             )
-        elif operation == "SCHEMA_EVOLVE":
-            # Rough approximation if cd_deployer fails to import
-            new_cols = []
-            for c in sorted(set(v2_props) - set(v1_props)):
-                new_cols.append(c)
-                if c in sensitive_columns:
-                    new_cols.append(f"{c}_raw")
-            if new_cols:
-                log.info(
-                    "  ALTER TABLE standardized.%s ADD COLUMNS: %s",
-                    target_table, new_cols,
-                )
-            else:
-                log.info(
-                    "  No column additions needed. "
-                    "Only format widenings detected — no DDL will be executed."
-                )
-        elif operation == "NUCLEAR_RESET":
-            log.info(
-                "  RENAME TABLE standardized.%s TO %s_archive_<timestamp>",
-                target_table, target_table,
-            )
-            log.info(
-                "  CREATE TABLE standardized.%s with NEW schema (%d columns).",
-                target_table, len(v2_props),
-            )
-            log.info("  Justification: %s", nuclear_justification)
-        elif operation == "PURE_REMAP":
-            log.info(
-                "  Zero DDL. Schema unchanged. Only topic routing config will be updated."
-            )
+        # simplified mock paths omitted for brevity to push developer towards using cd_deployer
         return
 
-    # Use cd_deployer to generate the actual DDL string
-    # We must mock some fields that cd_deployer internal methods expect
-    s3_location = f"s3://datalake/standardized/{target_table}/"
-    database = "standardized"
-
-    def props_to_columns(props: dict) -> list[dict]:
-        # Translates our properties map back up to mock an extracted columns map
-        cols = []
-        for name, defn in props.items():
-            # Standardized layer is strictly STRING
-            iceberg_type = "STRING"
-            
-            comment = defn.get("description", "")
-            if name in sensitive_columns:
-                comment = f"{comment} SENSITIVE - Masked.".strip()
-
-            cols.append({
-                "name": name,
-                "iceberg_type": iceberg_type,
-                "comment": comment,
-                "required": False, # doesn't matter for DDL
-            })
-            
-            if name in sensitive_columns:
-                cols.append({
-                    "name": f"{name}_raw",
-                    "iceberg_type": "STRING",
-                    "comment": f"RAW unmasked value for {name}. SENSITIVE.",
-                    "required": False,
-                })
-        return cols
-
-    if operation == "NEW_TABLE":
-        cols = props_to_columns(v2_props)
-        ddl = cd_deployer._build_create_table_ddl(database, target_table, cols, s3_location)
-        log.info("\n%s\n", ddl)
-
-    elif operation == "SCHEMA_EVOLVE":
-        v1_cols = props_to_columns(v1_props)
-        v2_cols = props_to_columns(v2_props)
+    def _get_mock_targets(props: dict):
+        std_cols = cd_deployer._extract_columns({"components": {"schemas": {"Mock": {"properties": props}}}}, "standardized", sensitive_columns)
+        cur_cols = cd_deployer._extract_columns({"components": {"schemas": {"Mock": {"properties": props}}}}, "curated", sensitive_columns)
+        return [
+            {"layer": "standardized", "db": database_std, "table": std_table_name, "cols": std_cols},
+            {"layer": "curated",      "db": database_cur, "table": cur_table_name, "cols": cur_cols},
+        ]
         
-        v1_col_names = {c["name"] for c in v1_cols}
-        v2_col_names = {c["name"] for c in v2_cols}
+    v1_targets = _get_mock_targets(v1_props) if v1_props else []
+    v2_targets = _get_mock_targets(v2_props)
+
+    for i, target in enumerate(v2_targets):
+        layer   = target["layer"]
+        t_db    = target["db"]
+        t_table = target["table"]
+        t_cols  = target["cols"]
         
-        new_names = sorted(v2_col_names - v1_col_names)
-        if new_names:
-            cols = [c for c in v2_cols if c["name"] in new_names]
-            ddl = cd_deployer._build_add_columns_ddl(database, target_table, cols)
+        # Determine base s3 purely for visual log accuracy
+        base_s3 = f"s3://datalake/{layer}/{t_table}/"
+
+        if operation == "NEW_TABLE":
+            ddl = cd_deployer._build_create_table_ddl(t_db, t_table, t_cols, base_s3)
             log.info("\n%s\n", ddl)
-        else:
+
+        elif operation == "SCHEMA_EVOLVE":
+            v1_cols = v1_targets[i]["cols"]
+            v1_col_names = {c["name"] for c in v1_cols}
+            v2_col_names = {c["name"] for c in t_cols}
+            
+            new_names = sorted(v2_col_names - v1_col_names)
+            if new_names:
+                add_cols = [c for c in t_cols if c["name"] in new_names]
+                ddl = cd_deployer._build_add_columns_ddl(t_db, t_table, add_cols)
+                log.info("\n%s\n", ddl)
+            else:
+                log.info(
+                    "  [%s] No column additions needed. "
+                    "Only configuration changes detected — no DDL will be executed.",
+                    layer.upper()
+                )
+
+        elif operation == "NUCLEAR_RESET":
+            ddl = cd_deployer._build_create_table_ddl(t_db, t_table, t_cols, base_s3)
             log.info(
-                "  No column additions needed. "
-                "Only configuration changes detected — no DDL will be executed."
+                "  RENAME TABLE %s.%s TO %s_archive_<timestamp>",
+                t_db, t_table, t_table,
             )
+            log.info("\n%s\n", ddl)
+            if i == len(v2_targets) - 1:
+                 log.info("  Justification: %s", nuclear_justification)
 
-    elif operation == "NUCLEAR_RESET":
-        cols = props_to_columns(v2_props)
-        ddl = cd_deployer._build_create_table_ddl(database, target_table, cols, s3_location)
-        log.info(
-            "  RENAME TABLE standardized.%s TO %s_archive_<timestamp>",
-            target_table, target_table,
-        )
-        log.info("\n%s\n", ddl)
-        log.info("  Justification: %s", nuclear_justification)
-
-    elif operation == "PURE_REMAP":
-        log.info(
-            "  Zero DDL. Schema unchanged. Only topic routing config will be updated."
-        )
+        elif operation == "PURE_REMAP":
+            if i == 0:
+                 log.info(
+                     "  Zero DDL. Schema unchanged. Only topic routing config will be updated."
+                 )
 
 
 # ---------------------------------------------------------------------------

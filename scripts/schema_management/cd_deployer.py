@@ -176,9 +176,10 @@ def _load_json(path: str) -> dict:
 # Schema extraction from swagger
 # ---------------------------------------------------------------------------
 
-def _extract_columns(swagger: dict, sensitive_columns: Optional[list[str]] = None) -> list[dict]:
+def _extract_columns(swagger: dict, layer: str, sensitive_columns: Optional[list[str]] = None) -> list[dict]:
     """
     Extract an ordered column list from the OpenAPI swagger.
+    layer: 'standardized' (all STRING, with _raw) or 'curated' (strongly typed, masked only)
     Returns: [{name, iceberg_type, comment, required}]
     """
     if sensitive_columns is None:
@@ -215,8 +216,16 @@ def _extract_columns(swagger: dict, sensitive_columns: Optional[list[str]] = Non
 
     columns = []
     for field_name, field_def in flat_properties.items():
-        # Standardized layer strictly uses STRING for all payload elements to auto-drift safely
-        iceberg_type = "STRING"
+        if layer == "standardized":
+            # Standardized layer strictly uses STRING for all payload elements to auto-drift safely
+            iceberg_type = "STRING"
+        else:
+            # Curated layer uses strict mapped types
+            iceberg_type = _openapi_to_iceberg(
+                field_def.get("type", "string"),
+                field_def.get("format"),
+                field_def.get("items"),
+            )
         
         comment = field_def.get("description", "")
         if field_name in sensitive_columns:
@@ -229,7 +238,7 @@ def _extract_columns(swagger: dict, sensitive_columns: Optional[list[str]] = Non
             "required":     field_name in required_fields, # Note: Deep required resolution done in linter
         })
         
-        if field_name in sensitive_columns:
+        if layer == "standardized" and field_name in sensitive_columns:
             columns.append({
                 "name":         f"{field_name}_raw",
                 "iceberg_type": "STRING",
@@ -237,7 +246,7 @@ def _extract_columns(swagger: dict, sensitive_columns: Optional[list[str]] = Non
                 "required":     False,
             })
 
-    log.info("Extracted %d flattened payload columns from swagger model '%s'.", len(columns), model_name)
+    log.info("Extracted %d flattened payload columns from swagger model '%s' for layer '%s'.", len(columns), model_name, layer)
     return columns
 
 
@@ -553,73 +562,100 @@ def deploy(swagger_path: str, metadata_path: str) -> None:
     log.info("Source topics : %s", source_topics)
     log.info("Nuclear reset : %s", nuclear_reset)
 
-    # ── Extract columns ────────────────────────────────────────────────────
-    columns = _extract_columns(swagger, sensitive_columns=metadata.get("sensitive_columns", []))
+    # ── Extract columns (Both Layers) ───────────────────────────────────────
+    std_columns = _extract_columns(swagger, layer="standardized", sensitive_columns=metadata.get("sensitive_columns", []))
+    cur_columns = _extract_columns(swagger, layer="curated", sensitive_columns=metadata.get("sensitive_columns", []))
 
-    # ── Re-classify against live Glue state ───────────────────────────────
-    # This is intentionally re-done here (not trusted from CI output)
-    # to guard against race conditions where another PR merged between
-    # the CI check and this CD run.
-    table_exists = _table_exists(glue, database, target_table)
+    # Determine table names
+    std_table_name = target_table
+    cur_table_name = target_table.replace("std_", "cur_", 1) if target_table.startswith("std_") else f"cur_{target_table}"
 
-    archive_table_name: Optional[str] = None
+    database_std = env["ATHENA_DATABASE"]
+    database_cur = env.get("ATHENA_DATABASE_CURATED", database_std.replace("standardized", "curated"))
 
-    # ── Execute DDL ────────────────────────────────────────────────────────
-    if not table_exists:
-        # ── NEW TABLE ──────────────────────────────────────────────────────
-        log.info("Table '%s' not found in Glue Catalog. Creating new table.", target_table)
+    # To simplify dual-deployment, define a payload config tuple
+    deploy_targets = [
+        {"layer": "standardized", "db": database_std, "table": std_table_name, "cols": std_columns},
+        {"layer": "curated",      "db": database_cur, "table": cur_table_name, "cols": cur_columns},
+    ]
 
-        s3_location = (
-            f"{env['ICEBERG_TABLE_S3_BASE'].rstrip('/')}/{target_table}/"
-        )
-        ddl = _build_create_table_ddl(database, target_table, columns, s3_location)
-        _run_athena_ddl(
-            athena, ddl, database,
-            env["ATHENA_WORKGROUP"], env["ATHENA_OUTPUT_S3"],
-            label=f"CREATE TABLE {target_table}",
-        )
+    nuclear_archive_tables = []
 
-    elif nuclear_reset:
-        # ── NUCLEAR RESET ──────────────────────────────────────────────────
-        log.warning("NUCLEAR RESET: Archiving '%s' and recreating with new schema.", target_table)
+    for target in deploy_targets:
+        layer      = target["layer"]
+        t_db       = target["db"]
+        t_table    = target["table"]
+        t_cols     = target["cols"]
 
-        archive_table_name = _archive_table(glue, database, target_table)
+        log.info("--- Processing Layer: %s [%s.%s] ---", layer.upper(), t_db, t_table)
 
-        # New table gets a fresh S3 prefix — old data stays at the archive prefix
-        ts          = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-        s3_location = (
-            f"{env['ICEBERG_TABLE_S3_BASE'].rstrip('/')}/{target_table}_{ts}/"
-        )
-        ddl = _build_create_table_ddl(database, target_table, columns, s3_location)
-        _run_athena_ddl(
-            athena, ddl, database,
-            env["ATHENA_WORKGROUP"], env["ATHENA_OUTPUT_S3"],
-            label=f"CREATE TABLE {target_table} (post nuclear reset)",
-        )
+        table_exists = _table_exists(glue, t_db, t_table)
 
-    else:
-        # ── SCHEMA EVOLVE or PURE REMAP ────────────────────────────────────
-        existing_cols = _get_existing_column_names(glue, database, target_table)
-        swagger_col_names = {c["name"] for c in columns}
-        new_col_names  = swagger_col_names - existing_cols
-        new_columns    = [c for c in columns if c["name"] in new_col_names]
+        # ── Execute DDL ────────────────────────────────────────────────────────
+        if not table_exists:
+            # ── NEW TABLE ──────────────────────────────────────────────────────
+            log.info("Table '%s' not found in Glue Catalog. Creating new table.", t_table)
 
-        if not new_columns:
-            log.info(
-                "No new columns to add — schema already matches Glue Catalog. "
-                "This is a PURE REMAP or a no-op evolution. Skipping DDL."
-            )
-        else:
-            log.info(
-                "SCHEMA EVOLVE: Adding %d new column(s): %s",
-                len(new_columns), [c["name"] for c in new_columns],
-            )
-            ddl = _build_add_columns_ddl(database, target_table, new_columns)
+            # E.g. s3://datalake/standardized/std_options/  OR s3://datalake/curated/cur_options/
+            base_s3 = env['ICEBERG_TABLE_S3_BASE'].rstrip('/')
+            if layer == "curated":
+                base_s3 = base_s3.replace("standardized", "curated")
+
+            s3_location = f"{base_s3}/{t_table}/"
+            
+            ddl = _build_create_table_ddl(t_db, t_table, t_cols, s3_location)
             _run_athena_ddl(
-                athena, ddl, database,
+                athena, ddl, t_db,
                 env["ATHENA_WORKGROUP"], env["ATHENA_OUTPUT_S3"],
-                label=f"ALTER TABLE {target_table} ADD COLUMNS",
+                label=f"CREATE TABLE {t_table} ({layer})",
             )
+
+        elif nuclear_reset:
+            # ── NUCLEAR RESET ──────────────────────────────────────────────────
+            log.warning("NUCLEAR RESET: Archiving '%s' and recreating with new schema.", t_table)
+
+            archive_table_name = _archive_table(glue, t_db, t_table)
+            if layer == "standardized":
+                 nuclear_archive_tables.append(archive_table_name) # Used to trigger Rebuilder
+
+            # New table gets a fresh S3 prefix — old data stays at the archive prefix
+            ts          = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+            base_s3 = env['ICEBERG_TABLE_S3_BASE'].rstrip('/')
+            if layer == "curated":
+                base_s3 = base_s3.replace("standardized", "curated")
+                
+            s3_location = f"{base_s3}/{t_table}_{ts}/"
+            
+            ddl = _build_create_table_ddl(t_db, t_table, t_cols, s3_location)
+            _run_athena_ddl(
+                athena, ddl, t_db,
+                env["ATHENA_WORKGROUP"], env["ATHENA_OUTPUT_S3"],
+                label=f"CREATE TABLE {t_table} (post nuclear reset) ({layer})",
+            )
+
+        else:
+            # ── SCHEMA EVOLVE or PURE REMAP ────────────────────────────────────
+            existing_cols = _get_existing_column_names(glue, t_db, t_table)
+            swagger_col_names = {c["name"] for c in t_cols}
+            new_col_names  = swagger_col_names - existing_cols
+            new_columns    = [c for c in t_cols if c["name"] in new_col_names]
+
+            if not new_columns:
+                log.info(
+                    "No new columns to add — schema already matches Glue Catalog. "
+                    "This is a PURE REMAP or a no-op evolution. Skipping DDL."
+                )
+            else:
+                log.info(
+                    "SCHEMA EVOLVE: Adding %d new column(s): %s",
+                    len(new_columns), [c["name"] for c in new_columns],
+                )
+                ddl = _build_add_columns_ddl(t_db, t_table, new_columns)
+                _run_athena_ddl(
+                    athena, ddl, t_db,
+                    env["ATHENA_WORKGROUP"], env["ATHENA_OUTPUT_S3"],
+                    label=f"ALTER TABLE {t_table} ADD COLUMNS ({layer})",
+                )
 
     # ── Upload metadata.json to S3 ─────────────────────────────────────────
     _upload_metadata(s3, env["CONFIG_BUCKET"], primary_topic, metadata_path)
@@ -632,14 +668,15 @@ def deploy(swagger_path: str, metadata_path: str) -> None:
     _update_pipeline_registry(dynamodb, registry_table, primary_topic, status)
     
     # ── Trigger Rebuilder if nuclear reset ─────────────────────────────────
-    if nuclear_reset and archive_table_name:
+    if nuclear_reset and nuclear_archive_tables:
         log.info("Triggering Historical Rebuilder via Step Functions...")
+        std_archive = nuclear_archive_tables[0] # First one was Standardized layer
         exec_arn = _trigger_rebuilder(
             sfn,
             sfn_arn=env["REBUILDER_SFN_ARN"],
             target_table=target_table,
             source_topics=source_topics,
-            archive_table=archive_table_name,
+            archive_table=std_archive,
         )
         log.info(
             "Rebuilder started. Monitor at: "
