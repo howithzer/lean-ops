@@ -370,7 +370,7 @@ def _log_cd_preview(
     target_table: str,
     v1_props: dict,
     v2_props: dict,
-    sensitive_columns: list[str],
+    metadata: dict,
     nuclear_justification: str = "",
 ) -> None:
     """Log a human-readable preview of what the CD deployer will execute."""
@@ -378,10 +378,12 @@ def _log_cd_preview(
     log.info("CD DEPLOYER PREVIEW — what will be executed on merge:")
     
     std_table_name = target_table
-    cur_table_name = target_table.replace("std_", "cur_", 1) if target_table.startswith("std_") else f"cur_{target_table}"
+    cur_table_name = metadata.get("target_cur_table", target_table.replace("std_", "cur_", 1) if target_table.startswith("std_") else f"cur_{target_table}")
 
-    database_std = "standardized"
-    database_cur = "curated"
+    database_std = metadata.get("database_std", "standardized")
+    database_cur = metadata.get("database_cur", "curated")
+
+    sensitive_columns = metadata.get("sensitive_columns", [])
 
     try:
         # Import cd_deployer internally so linter doesn't strictly depend on it 
@@ -415,7 +417,8 @@ def _log_cd_preview(
         t_cols  = target["cols"]
         
         # Determine base s3 purely for visual log accuracy
-        base_s3 = f"s3://datalake/{layer}/{t_table}/"
+        explicit_s3 = metadata.get(f"s3_path_{layer[:3]}")
+        base_s3 = f"{explicit_s3.rstrip('/')}/" if explicit_s3 else f"s3://datalake/{layer}/{t_table}/"
 
         if operation == "NEW_TABLE":
             ddl = cd_deployer._build_create_table_ddl(t_db, t_table, t_cols, base_s3)
@@ -523,7 +526,7 @@ class SchemaLinter:
         if self.is_first_deploy:
             log.info("")
             log.info("RESULT: PASS — First deployment. No v1 schema to compare against.")
-            _log_cd_preview("NEW_TABLE", target_table, {}, v2_props, self.metadata.get("sensitive_columns", []))
+            _log_cd_preview("NEW_TABLE", target_table, {}, v2_props, self.metadata)
             return 0
 
         # Step 4: Extract v1 properties
@@ -558,7 +561,7 @@ class SchemaLinter:
                 "Impact        : %s", self.metadata.get("impact_assessment", "")
             )
             _log_cd_preview(
-                operation, target_table, v1_props, v2_props, self.metadata.get("sensitive_columns", []),
+                operation, target_table, v1_props, v2_props, self.metadata,
                 self.metadata.get("nuclear_justification", ""),
             )
             log.info("")
@@ -567,7 +570,7 @@ class SchemaLinter:
 
         # Step 7: Pure remap — schema unchanged
         if operation == "PURE_REMAP":
-            _log_cd_preview(operation, target_table, v1_props, v2_props, self.metadata.get("sensitive_columns", []))
+            _log_cd_preview(operation, target_table, v1_props, v2_props, self.metadata)
             log.info("")
             log.info("RESULT: PASS — Pure topic remap. Schema unchanged.")
             return 0
@@ -581,7 +584,7 @@ class SchemaLinter:
             v1_props, v1_required, v2_props, v2_required
         )
 
-        _log_cd_preview(operation, target_table, v1_props, v2_props, self.metadata.get("sensitive_columns", []))
+        _log_cd_preview(operation, target_table, v1_props, v2_props, self.metadata)
 
         if breaking:
             log.error("")

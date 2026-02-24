@@ -568,10 +568,11 @@ def deploy(swagger_path: str, metadata_path: str) -> None:
 
     # Determine table names
     std_table_name = target_table
-    cur_table_name = target_table.replace("std_", "cur_", 1) if target_table.startswith("std_") else f"cur_{target_table}"
+    cur_table_name = metadata.get("target_cur_table", target_table.replace("std_", "cur_", 1) if target_table.startswith("std_") else f"cur_{target_table}")
 
-    database_std = env["ATHENA_DATABASE"]
-    database_cur = env.get("ATHENA_DATABASE_CURATED", database_std.replace("standardized", "curated"))
+    # Determine databases (Allows direct specification in metadata, falls back to env vars)
+    database_std = metadata.get("database_std", env["ATHENA_DATABASE"])
+    database_cur = metadata.get("database_cur", env.get("ATHENA_DATABASE_CURATED", database_std.replace("standardized", "curated")))
 
     # To simplify dual-deployment, define a payload config tuple
     deploy_targets = [
@@ -596,12 +597,15 @@ def deploy(swagger_path: str, metadata_path: str) -> None:
             # ── NEW TABLE ──────────────────────────────────────────────────────
             log.info("Table '%s' not found in Glue Catalog. Creating new table.", t_table)
 
-            # E.g. s3://datalake/standardized/std_options/  OR s3://datalake/curated/cur_options/
-            base_s3 = env['ICEBERG_TABLE_S3_BASE'].rstrip('/')
-            if layer == "curated":
-                base_s3 = base_s3.replace("standardized", "curated")
-
-            s3_location = f"{base_s3}/{t_table}/"
+            # Metadata explicit S3 path takes absolute precedence. Otherwise, build from Env Var default
+            explicit_s3 = metadata.get(f"s3_path_{layer[:3]}")
+            if explicit_s3:
+                s3_location = f"{explicit_s3.rstrip('/')}/"
+            else:
+                base_s3 = env['ICEBERG_TABLE_S3_BASE'].rstrip('/')
+                if layer == "curated":
+                    base_s3 = base_s3.replace("standardized", "curated")
+                s3_location = f"{base_s3}/{t_table}/"
             
             ddl = _build_create_table_ddl(t_db, t_table, t_cols, s3_location)
             _run_athena_ddl(
@@ -619,12 +623,17 @@ def deploy(swagger_path: str, metadata_path: str) -> None:
                  nuclear_archive_tables.append(archive_table_name) # Used to trigger Rebuilder
 
             # New table gets a fresh S3 prefix — old data stays at the archive prefix
-            ts          = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-            base_s3 = env['ICEBERG_TABLE_S3_BASE'].rstrip('/')
-            if layer == "curated":
-                base_s3 = base_s3.replace("standardized", "curated")
-                
-            s3_location = f"{base_s3}/{t_table}_{ts}/"
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+            explicit_s3 = metadata.get(f"s3_path_{layer[:3]}")
+            
+            if explicit_s3:
+                # If explicit path provided, strip trailing slash and append timestamp to avoid collisions
+                s3_location = f"{explicit_s3.rstrip('/')}_{ts}/"
+            else:
+                base_s3 = env['ICEBERG_TABLE_S3_BASE'].rstrip('/')
+                if layer == "curated":
+                    base_s3 = base_s3.replace("standardized", "curated")
+                s3_location = f"{base_s3}/{t_table}_{ts}/"
             
             ddl = _build_create_table_ddl(t_db, t_table, t_cols, s3_location)
             _run_athena_ddl(
