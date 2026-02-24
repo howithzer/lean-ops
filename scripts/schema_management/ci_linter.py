@@ -148,37 +148,48 @@ def _extract_properties(swagger: dict, source_label: str) -> tuple[dict, set[str
     required = set(model_def.get("required", []))
 
     # Helper function to recursively flatten swagger properties
-    def _flatten_swagger_props(props: dict, prefix: str = "") -> dict:
+    def _flatten_swagger_props(props: dict, prefix: str = "", current_depth: int = 1) -> dict:
         flattened = {}
         for k, v in props.items():
             new_key = f"{prefix}_{k}" if prefix else k
             # Sanitize column name (matching utils.flatten)
             new_key = new_key.replace("-", "_").replace(".", "_").lower()
 
-            if v.get("type") == "object" and "properties" in v:
-                flattened.update(_flatten_swagger_props(v["properties"], new_key))
+            field_def = v
+            if "$ref" in field_def:
+                ref_key = field_def["$ref"].split("/")[-1]
+                field_def = schemas.get(ref_key, field_def)
+
+            if field_def.get("type") == "object" and "properties" in field_def and current_depth < 5:
+                flattened.update(_flatten_swagger_props(field_def["properties"], new_key, current_depth + 1))
             else:
-                flattened[new_key] = v
+                flattened[new_key] = field_def
         return flattened
 
-    def _flatten_required(reqs: list, props: dict, prefix: str = "") -> set:
+    def _flatten_required(reqs: list, props: dict, prefix: str = "", current_depth: int = 1) -> set:
         flattened_reqs = set()
         for k in reqs:
             v = props.get(k, {})
             new_key = f"{prefix}_{k}" if prefix else k
             new_key = new_key.replace("-", "_").replace(".", "_").lower()
             
-            if v.get("type") == "object" and "properties" in v:
+            field_def = v
+            if "$ref" in field_def:
+                ref_key = field_def["$ref"].split("/")[-1]
+                field_def = schemas.get(ref_key, field_def)
+
+            if field_def.get("type") == "object" and "properties" in field_def and current_depth < 5:
                 # If an object is required, are its children required? 
                 # Open API defines required children locally. So here we just
                 # add the nested required fields if present.
-                nested_reqs = v.get("required", [])
-                flattened_reqs.update(_flatten_required(nested_reqs, v["properties"], new_key))
+                nested_reqs = field_def.get("required", [])
+                flattened_reqs.update(_flatten_required(nested_reqs, field_def["properties"], new_key, current_depth + 1))
             else:
                 flattened_reqs.add(new_key)
         return flattened_reqs
 
     flat_properties = _flatten_swagger_props(properties)
+    print(f"DEBUG FLATTENED KEYS: {list(flat_properties.keys())}")
     flat_required = _flatten_required(list(required), properties)
 
     return flat_properties, flat_required

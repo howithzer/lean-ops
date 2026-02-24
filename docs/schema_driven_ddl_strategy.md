@@ -24,7 +24,7 @@ Use an **OpenAPI/JSON Schema file** on S3 to drive the creation of the Curated t
 │     ↓                                                                       │
 │  Glue Job: curated_processor                                                │
 │     • Uses MERGE (not writeTo().createOrReplace())                          │
-│     • Flattens json_payload → individual STRING columns                     │
+│     • Flattens json_payload → individual STRING columns (max depth 5)       │
 │     • ALTER TABLE ADD COLUMNS for new fields (schema drift)                 │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘

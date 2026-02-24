@@ -194,7 +194,7 @@ def _extract_columns(swagger: dict, layer: str, sensitive_columns: Optional[list
     properties = model_def.get("properties", {})
     required_fields = set(model_def.get("required", []))
 
-    def _flatten_swagger_props(props: dict, prefix: str = "") -> dict:
+    def _flatten_swagger_props(props: dict, prefix: str = "", current_depth: int = 1) -> dict:
         flattened = {}
         for k, v in props.items():
             new_key = f"{prefix}_{k}" if prefix else k
@@ -206,8 +206,8 @@ def _extract_columns(swagger: dict, layer: str, sensitive_columns: Optional[list
                 ref_key = field_def["$ref"].split("/")[-1]
                 field_def = schemas.get(ref_key, field_def)
 
-            if field_def.get("type") == "object" and "properties" in field_def:
-                flattened.update(_flatten_swagger_props(field_def["properties"], new_key))
+            if field_def.get("type") == "object" and "properties" in field_def and current_depth < 5:
+                flattened.update(_flatten_swagger_props(field_def["properties"], new_key, current_depth + 1))
             else:
                 flattened[new_key] = field_def
         return flattened
