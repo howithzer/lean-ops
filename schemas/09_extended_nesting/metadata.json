@@ -1,0 +1,10 @@
+{
+    "source_topics": [
+        "topic_extended_massive"
+    ],
+    "target_std_table": "std_extended_massive",
+    "sensitive_columns": [
+        "businesscontext_customerprofile_extendedprofile_demographics_locationdata",
+        "businesscontext_customerprofile_piidata_ssn"
+    ]
+}

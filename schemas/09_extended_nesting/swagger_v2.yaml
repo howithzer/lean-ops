@@ -1,0 +1,281 @@
+openapi: "3.0.0"
+info:
+  title: "Extended Massive Enterprise Schema Definition"
+  version: "3.0.0"
+
+components:
+  schemas:
+    ExtendedProductionGradeAnalysisRequest:
+      type: object
+      required:
+        - _metadata
+        - businessContext
+        - financialData
+      properties:
+        _metadata:
+          $ref: "#/components/schemas/AdvancedMetadata"
+        businessContext:
+          $ref: "#/components/schemas/BusinessContext"
+        financialData:
+          $ref: "#/components/schemas/FinancialData"
+        auxiliaryRecords:
+          type: array
+          description: "A list of auxiliary records referenced by the event."
+          items:
+            $ref: "#/components/schemas/AuxiliaryRecord"
+        auditTrail:
+          $ref: "#/components/schemas/AuditTrail"
+
+    AdvancedMetadata:
+      type: object
+      required:
+        - correlationId
+        - environment
+      properties:
+        correlationId:
+          type: string
+          maxLength: 36
+          description: "Global correlation UUID."
+        environment:
+          type: string
+          enum: [DEV, TEST, UAT, PROD]
+          description: "Deployment environment context."
+        sourceSystem:
+          $ref: "#/components/schemas/SystemIdentifier"
+        timestamps:
+          $ref: "#/components/schemas/TimestampBlock"
+
+    SystemIdentifier:
+      type: object
+      required:
+        - systemName
+      properties:
+        systemName:
+          type: string
+          maxLength: 64
+        subsystemId:
+          type: string
+          maxLength: 32
+        region:
+          type: string
+          description: "AWS or Datacenter region identifier."
+
+    TimestampBlock:
+      type: object
+      properties:
+        eventGeneratedAt:
+          type: string
+          format: date-time
+        eventObservedAt:
+          type: string
+          format: date-time
+        processingDeadline:
+          type: string
+          format: date-time
+
+    BusinessContext:
+      type: object
+      required:
+        - transactionId
+        - customerProfile
+      properties:
+        transactionId:
+          type: string
+          maxLength: 64
+        customerProfile:
+          $ref: "#/components/schemas/CustomerProfile"
+        merchantDetails:
+          $ref: "#/components/schemas/MerchantDetails"
+
+    CustomerProfile:
+      type: object
+      required:
+        - customerId
+      properties:
+        customerId:
+          type: string
+          maxLength: 36
+        customerType:
+          type: string
+          enum: [RETAIL, CORPORATE, INSTITUTIONAL]
+        riskRating:
+          type: integer
+          format: int32
+        piiData:
+          $ref: "#/components/schemas/PiiData"
+        extendedProfile:
+          $ref: "#/components/schemas/ExtendedProfile"
+
+    ExtendedProfile:
+      type: object
+      properties:
+        loyaltyTier:
+          type: string
+        lifetimeValue:
+          type: number
+          format: double
+        demographics:
+          $ref: "#/components/schemas/Demographics"
+
+    Demographics:
+      type: object
+      properties:
+        ageRange:
+          type: string
+        incomeBracket:
+          type: string
+        locationData:
+          $ref: "#/components/schemas/LocationData"
+
+    LocationData:
+      type: object
+      properties:
+        countryCode:
+          type: string
+        regionCode:
+          type: string
+        city:
+          type: string
+        preciseCoordinates:
+          $ref: "#/components/schemas/Coordinates"
+        residentialAddress:
+          $ref: "#/components/schemas/Address"
+
+    Address:
+      type: object
+      properties:
+        streetLine1:
+          type: string
+        streetLine2:
+          type: string
+        postalCode:
+          type: string
+
+    Coordinates:
+      type: object
+      properties:
+        latitude:
+          type: number
+          format: double
+        longitude:
+          type: number
+          format: double
+        accuracyMeters:
+          type: integer
+
+    PiiData:
+      type: object
+      properties:
+        ssn:
+          type: string
+          description: "SENSITIVE - Social Security Number"
+        emailAddress:
+          type: string
+          format: email
+          description: "SENSITIVE - Customer Email Address"
+        phoneNumber:
+          type: string
+          description: "SENSITIVE - Customer Phone Number"
+
+    MerchantDetails:
+      type: object
+      properties:
+        merchantId:
+          type: string
+          maxLength: 36
+        mccCode:
+          type: string
+          maxLength: 4
+        merchantName:
+          type: string
+          maxLength: 128
+
+    FinancialData:
+      type: object
+      required:
+        - transactionAmount
+        - currency
+      properties:
+        transactionAmount:
+          type: number
+          format: double
+        currency:
+          type: string
+          maxLength: 3
+        exchangeRate:
+          type: number
+          format: double
+        settlementDetails:
+          $ref: "#/components/schemas/SettlementDetails"
+        lineItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/LineItem"
+
+    SettlementDetails:
+      type: object
+      properties:
+        settlementDate:
+          type: string
+          format: date
+        clearingHouse:
+          type: string
+        status:
+          type: string
+          enum: [PENDING, CLEARED, REJECTED]
+
+    LineItem:
+      type: object
+      required:
+        - itemId
+        - quantity
+      properties:
+        itemId:
+          type: string
+          maxLength: 36
+        quantity:
+          type: integer
+          format: int64
+        unitPrice:
+          type: number
+          format: double
+        taxAmount:
+          type: number
+          format: double
+
+    AuxiliaryRecord:
+      type: object
+      properties:
+        recordId:
+          type: string
+        recordType:
+          type: string
+        payloadReferences:
+          type: array
+          items:
+            type: string
+
+    AuditTrail:
+      type: object
+      properties:
+        initiatedBy:
+          type: string
+        authorizedBy:
+          type: string
+        approvalTimestamp:
+          type: string
+          format: date-time
+        signatures:
+          type: array
+          items:
+            $ref: "#/components/schemas/Signature"
+
+    Signature:
+      type: object
+      properties:
+        signerId:
+          type: string
+        signatureHash:
+          type: string
+        algorithm:
+          type: string
