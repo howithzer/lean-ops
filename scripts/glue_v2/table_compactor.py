@@ -95,10 +95,14 @@ def _count_files(catalog_table: str) -> int:
 # Compaction
 # ---------------------------------------------------------------------------
 
-def compact_table(database: str, table: str, layer: str, partition_date: str):
+def compact_table(database: str, table: str, layer: str, partition_date: str, partition_col: str):
     """
-    Runs Iceberg rewrite_data_files on yesterday's partition for one table,
-    then expires old snapshots. Writes a maintenance_log entry with the result.
+    Runs Iceberg rewrite_data_files on yesterday's partition for one table.
+    `partition_col` is the day()-partitioned column for this layer:
+      - RAW / STANDARDIZED : 'publish_ts'
+      - CURATED             : 'dl_ingest_ts'
+    Using the actual partition column allows Iceberg to prune at partition
+    level rather than scanning the whole table.
     """
     catalog_table = f"{CATALOG}.{database}.{table}"
     start_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -106,13 +110,13 @@ def compact_table(database: str, table: str, layer: str, partition_date: str):
     try:
         files_before = _count_files(catalog_table)
 
-        # Compact only yesterday's partition using binpack strategy
-        # The WHERE clause limits compaction scope to avoid touching active partitions
+        # Compact only yesterday's partition — use the actual day() partition
+        # column so Iceberg prunes at partition level (no full table scan)
         spark.sql(f"""
             CALL {CATALOG}.system.rewrite_data_files(
-                table  => '{database}.{table}',
+                table    => '{database}.{table}',
                 strategy => 'binpack',
-                where  => 'date(ingestion_ts) = date("{partition_date}")'
+                where    => 'date({partition_col}) = date("{partition_date}")'
             )
         """)
         logger.info("[%s] Compacted %s (partition: %s)", layer, catalog_table, partition_date)
@@ -157,14 +161,16 @@ def skip_table(database: str, table: str, layer: str, reason: str):
 # Partition Existence Check
 # ---------------------------------------------------------------------------
 
-def _has_yesterday_data(catalog_table: str) -> bool:
+def _has_yesterday_data(catalog_table: str, partition_col: str) -> bool:
     """
     Returns True if the table has any data in yesterday's partition.
     Avoids running rewrite_data_files on empty partitions (which would fail).
+    `partition_col` must be the actual day() partition column so Iceberg can
+    prune at the partition level without a full scan.
     """
     try:
         count = spark.sql(
-            f"SELECT count(*) AS cnt FROM {catalog_table} WHERE date(ingestion_ts) = date('{YESTERDAY}')"
+            f"SELECT count(*) AS cnt FROM {catalog_table} WHERE date({partition_col}) = date('{YESTERDAY}')"
         ).first()['cnt']
         return count > 0
     except Exception:
@@ -178,6 +184,14 @@ def _has_yesterday_data(catalog_table: str) -> bool:
 def main():
     totals = {"success": 0, "skipped": 0, "failed": 0}
 
+    # Partition columns per layer
+    # RAW + STANDARDIZED : partitioned by period_reference, day(publish_ts)
+    # CURATED            : partitioned by period_reference, day(publish_ts), day(dl_ingest_ts)
+    # Use the day()-partitioned column for both the existence check and compaction
+    # WHERE filter so Iceberg can prune at partition level.
+    RAW_STD_PART_COL = "publish_ts"
+    CURATED_PART_COL = "dl_ingest_ts"
+
     # ── 1. Compact RAW Tables (auto-discovered) ──────────────────────────────
     logger.info("--- Discovering RAW tables in '%s' ---", RAW_DATABASE)
     raw_tables = spark.catalog.listTables(RAW_DATABASE)
@@ -185,11 +199,11 @@ def main():
         table_name    = t.name
         catalog_table = f"{CATALOG}.{RAW_DATABASE}.{table_name}"
 
-        if not _has_yesterday_data(catalog_table):
+        if not _has_yesterday_data(catalog_table, RAW_STD_PART_COL):
             skip_table(RAW_DATABASE, table_name, "RAW", "No data for partition date")
             totals["skipped"] += 1
         else:
-            compact_table(RAW_DATABASE, table_name, "RAW", YESTERDAY)
+            compact_table(RAW_DATABASE, table_name, "RAW", YESTERDAY, RAW_STD_PART_COL)
             totals["success"] += 1
 
     # ── 2. Compact Std and Curated tables from inventory ─────────────────────
@@ -199,22 +213,24 @@ def main():
     for row in inventory:
         # Standardized
         std_table = f"{CATALOG}.{row.standardized_database}.{row.standardized_table}"
-        if not _has_yesterday_data(std_table):
+        if not _has_yesterday_data(std_table, RAW_STD_PART_COL):
             skip_table(row.standardized_database, row.standardized_table, "STANDARDIZED",
                        "No data for partition date")
             totals["skipped"] += 1
         else:
-            compact_table(row.standardized_database, row.standardized_table, "STANDARDIZED", YESTERDAY)
+            compact_table(row.standardized_database, row.standardized_table,
+                          "STANDARDIZED", YESTERDAY, RAW_STD_PART_COL)
             totals["success"] += 1
 
-        # Curated
+        # Curated — uses dl_ingest_ts as the compaction scope partition column
         cur_table = f"{CATALOG}.{row.curated_database}.{row.curated_table}"
-        if not _has_yesterday_data(cur_table):
+        if not _has_yesterday_data(cur_table, CURATED_PART_COL):
             skip_table(row.curated_database, row.curated_table, "CURATED",
                        "No data for partition date")
             totals["skipped"] += 1
         else:
-            compact_table(row.curated_database, row.curated_table, "CURATED", YESTERDAY)
+            compact_table(row.curated_database, row.curated_table,
+                          "CURATED", YESTERDAY, CURATED_PART_COL)
             totals["success"] += 1
 
     logger.info(
