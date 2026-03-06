@@ -84,6 +84,7 @@ def main():
         {
             "subscription_name":      row["subscription_name"],
             "topic_name":             row["topic_name"],
+            "ingestion_mode":         row["ingestion_mode"] or "STREAMING",
             "raw_database":           row["raw_database"],
             "raw_table":              row["raw_table"],
             "standardized_database":  row["standardized_database"],

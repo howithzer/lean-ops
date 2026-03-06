@@ -269,6 +269,19 @@ def main():
         keep_cols   = [c for c in schema_cols + audit_cols if c in df_audited.columns]
         df_final    = df_audited.select(*keep_cols)
 
+        # Stage 7b: Repartition before MERGE
+        # Curated is partitioned by (period_reference, day(publish_ts), day(dl_ingest_ts)).
+        # Repartition on period_reference + today's dl_ingest_ts date BEFORE writing
+        # so Spark produces target_files per Iceberg partition rather than hundreds
+        # of tiny files from the type-cast/audit-column shuffle.
+        target_files = int(args.get('target_files_per_partition', '4'))
+        df_final = df_final.repartition(
+            target_files,
+            F.col("period_reference"),
+            F.to_date(F.current_timestamp())   # dl_ingest_ts partition = today
+        )
+        logger.info("Repartitioned: %d file(s) per Iceberg partition before MERGE.", target_files)
+
         # Stage 8: MERGE Write
         current_stage = "WRITE"
         _write_curated(df_final, primary_key)

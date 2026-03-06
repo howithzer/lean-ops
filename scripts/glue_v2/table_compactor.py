@@ -95,34 +95,39 @@ PARTITION_COL = {
 # Tiered Compaction Logic
 # ---------------------------------------------------------------------------
 
-def _get_partitions_to_compact(layer: str) -> list:
+def _get_partitions_to_compact(ingestion_mode: str) -> list:
     """
     Returns a list of (partition_date_str, tier) tuples for the current run.
 
-    Daily tier  : yesterday only (runs every day)
-    Weekly tier : each day of the past week from 7-13 days ago (runs Sundays only)
-    Quarterly   : each day of the quarter boundary 90-180 days ago (runs quarterly)
+    STREAMING topics (Firehose 64MB/150s):
+      → ~576 files/day produced by Firehose → aggressive DAILY compaction essential.
+      → DAILY tier runs every day for the past 7 days.
 
-    In practice the Step Function EventBridge schedule can pass a 'run_mode'
-    parameter to force weekly/quarterly runs; here we derive from TODAY's weekday
-    and day-of-year so the same job works for all tiers without separate triggers.
+    BATCH topics (periodic file drops):
+      → Files already land in large chunks → low file count even without daily compaction.
+      → Skip DAILY tier; WEEKLY warm and QUARTERLY cold still apply.
+
+    WEEKLY  (Sundays): compact warm data 7-89 days old
+    QUARTERLY (Jan/Apr/Jul/Oct 1st): compact cold data 90-365 days old
     """
     partitions = []
+    is_streaming = ingestion_mode.upper() != "BATCH"
 
-    # Always: compact yesterday (DAILY tier for hot data 0-6 days old)
-    for delta in range(0, 7):
-        d = TODAY - timedelta(days=1 + delta)
-        partitions.append((d.strftime("%Y-%m-%d"), "DAILY"))
+    # DAILY: streaming topics only — compact the last 7 days every run
+    if is_streaming:
+        for delta in range(1, 8):
+            d = TODAY - timedelta(days=delta)
+            partitions.append((d.strftime("%Y-%m-%d"), "DAILY"))
 
-    # Sundays only: compact warm data (7-89 days old) — merge the week's daily compact files
-    if TODAY.weekday() == 6:  # Sunday
+    # WEEKLY: Sundays — warm data 7-89 days old (both modes)
+    if TODAY.weekday() == 6:
         for delta in range(7, 90):
             d = TODAY - timedelta(days=delta)
             partitions.append((d.strftime("%Y-%m-%d"), "WEEKLY"))
 
-    # First day of quarter: compact cold data (90-365 days old) into large files
+    # QUARTERLY: cold data 90-365 days (both modes, quarter boundary only)
     month = TODAY.month
-    if TODAY.day == 1 and month in (1, 4, 7, 10):  # Jan/Apr/Jul/Oct
+    if TODAY.day == 1 and month in (1, 4, 7, 10):
         for delta in range(90, 366):
             d = TODAY - timedelta(days=delta)
             partitions.append((d.strftime("%Y-%m-%d"), "QUARTERLY"))
@@ -232,8 +237,10 @@ def compact_one(database: str, table: str, layer: str, partition_date: str, tier
 # ---------------------------------------------------------------------------
 
 def main():
-    topic = args['topic_name']
-    logger.info("=== Table Compactor — Subscription: %s | Run: %s ===", topic, RUN_ID)
+    topic          = args['topic_name']
+    ingestion_mode = args.get('ingestion_mode', 'STREAMING').upper()
+    logger.info("=== Table Compactor — Subscription: %s | Mode: %s | Run: %s ===",
+                topic, ingestion_mode, RUN_ID)
 
     tables = [
         (args['raw_database'],          args['raw_table'],          "RAW"),
@@ -241,9 +248,9 @@ def main():
         (args['curated_database'],      args['curated_table'],      "CURATED"),
     ]
 
-    # Get all partitions that should be touched this run
-    partitions = _get_partitions_to_compact("any")
-    logger.info("Partitions to compact this run: %d", len(partitions))
+    # Get all partitions to compact based on ingestion mode + schedule tier
+    partitions = _get_partitions_to_compact(ingestion_mode)
+    logger.info("Partitions to compact this run: %d (mode=%s)", len(partitions), ingestion_mode)
 
     for database, table, layer in tables:
         logger.info("--- Processing [%s] %s.%s ---", layer, database, table)

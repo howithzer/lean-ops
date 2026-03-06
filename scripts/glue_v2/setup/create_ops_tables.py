@@ -48,6 +48,7 @@ def create_table_inventory():
         CREATE TABLE IF NOT EXISTS {CATALOG}.{OPS_DB}.table_inventory (
             subscription_name      STRING   COMMENT 'Full GCP subscription resource path',
             topic_name             STRING   COMMENT 'Short name used in table naming and Step Functions',
+            ingestion_mode         STRING   COMMENT 'STREAMING or BATCH — controls compaction aggressiveness',
             raw_database           STRING,
             raw_table              STRING,
             standardized_database  STRING,

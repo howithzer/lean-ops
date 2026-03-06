@@ -296,7 +296,23 @@ def main():
             logger.info("Added %d new column(s) to %s", len(new_cols), STANDARDIZED_TABLE)
         df_aligned  = align_dataframe_to_table(spark, df_flat, STANDARDIZED_TABLE)
 
-        # Stage 7: MERGE Write
+        # Stage 7: Repartition before MERGE
+        # Align Spark output partitions to Iceberg partition keys BEFORE writing.
+        # Without this, the Window shuffle (from FIFO/LIFO dedup) defaults to
+        # spark.sql.shuffle.partitions (typically 200) producing hundreds of small
+        # files in the Standardized table — defeating the purpose of RAW compaction.
+        #
+        # Repartition by (period_reference, date(publish_time)) so output maps to
+        # the Iceberg partition layout. target_files controls files per Iceberg
+        # partition — set higher for high-volume streaming topics.
+        target_files = int(args.get('target_files_per_partition', '4'))
+        df_aligned = df_aligned.repartition(
+            target_files,
+            F.col("period_reference"),
+            F.to_date(F.col("publish_time"))
+        )
+        logger.info("Repartitioned: %d file(s) per Iceberg partition before MERGE.", target_files)
+
         current_stage = "WRITE"
         df_aligned.createOrReplaceTempView("staged_data")
         cols         = df_aligned.columns
