@@ -50,13 +50,14 @@ logger = get_logger(__name__)
 
 args = getResolvedOptions(sys.argv, [
     'JOB_NAME',
-    'subscription_name',
     'topic_name',
-    'raw_database',      'raw_table',
-    'standardized_database', 'standardized_table',
-    'curated_database',  'curated_table',
+    'ingestion_mode',
+    'database',       # The single database for this layer
+    'table',          # The single table for this layer
+    'layer',          # RAW | STANDARDIZED | CURATED
     'ops_database',
     'iceberg_bucket',
+    'skip_expiry',    # 'true' | 'false' — decouple expiry for Curated/Snowflake safety
 ])
 
 sc = SparkContext()
@@ -69,8 +70,8 @@ ICEBERG_WAREHOUSE = f"s3://{args['iceberg_bucket']}/"
 CATALOG           = "glue_catalog"
 RUN_ID            = str(uuid.uuid4())
 TODAY             = date.today()
-
-RETENTION_DAYS    = 7   # Expire snapshots older than this
+SKIP_EXPIRY       = args.get('skip_expiry', 'false').lower() == 'true'
+RETENTION_DAYS    = 7
 
 for key, value in ICEBERG_CATALOG_SETTINGS.items():
     spark.conf.set(key, value)
@@ -239,28 +240,33 @@ def compact_one(database: str, table: str, layer: str, partition_date: str, tier
 def main():
     topic          = args['topic_name']
     ingestion_mode = args.get('ingestion_mode', 'STREAMING').upper()
-    logger.info("=== Table Compactor — Subscription: %s | Mode: %s | Run: %s ===",
-                topic, ingestion_mode, RUN_ID)
+    layer          = args['layer'].upper()
+    database       = args['database']
+    table          = args['table']
 
-    tables = [
-        (args['raw_database'],          args['raw_table'],          "RAW"),
-        (args['standardized_database'], args['standardized_table'], "STANDARDIZED"),
-        (args['curated_database'],      args['curated_table'],      "CURATED"),
-    ]
+    logger.info(
+        "=== Table Compactor — [%s] %s.%s | Mode: %s | SkipExpiry: %s | Run: %s ===",
+        layer, database, table, ingestion_mode, SKIP_EXPIRY, RUN_ID
+    )
 
     # Get all partitions to compact based on ingestion mode + schedule tier
     partitions = _get_partitions_to_compact(ingestion_mode)
-    logger.info("Partitions to compact this run: %d (mode=%s)", len(partitions), ingestion_mode)
+    logger.info("Partitions to compact: %d (mode=%s)", len(partitions), ingestion_mode)
 
-    for database, table, layer in tables:
-        logger.info("--- Processing [%s] %s.%s ---", layer, database, table)
-        for partition_date, tier in partitions:
-            compact_one(database, table, layer, partition_date, tier)
+    logger.info("--- Processing [%s] %s.%s ---", layer, database, table)
+    for partition_date, tier in partitions:
+        compact_one(database, table, layer, partition_date, tier)
 
-        # Expire old snapshots once per table (not per partition)
+    # Expire old snapshots — skipped for Curated on first pass so the
+    # Step Function Wait state can hold 5 minutes for Snowflake REST refresh
+    # before calling this job again with skip_expiry=false
+    if not SKIP_EXPIRY:
+        logger.info("Running expire_snapshots for %s.%s", database, table)
         _expire_snapshots(database, table)
+    else:
+        logger.info("Snapshot expiry SKIPPED (skip_expiry=true) — will run after Snowflake refresh buffer.")
 
-    logger.info("=== Compactor complete for subscription: %s ===", topic)
+    logger.info("=== Compactor complete: [%s] %s.%s ===", layer, database, table)
     job.commit()
 
 

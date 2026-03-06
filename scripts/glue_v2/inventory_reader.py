@@ -40,7 +40,7 @@ from utils.config import get_logger, ICEBERG_CATALOG_SETTINGS
 
 logger = get_logger(__name__)
 
-args = getResolvedOptions(sys.argv, ['JOB_NAME', 'iceberg_bucket', 'ops_database', 'output_bucket'])
+args = getResolvedOptions(sys.argv, ['JOB_NAME', 'iceberg_bucket', 'ops_database', 'output_bucket', 'layer'])
 
 sc = SparkContext()
 glueContext = GlueContext(sc)
@@ -51,6 +51,7 @@ job.init(args['JOB_NAME'], args)
 OPS_DB            = args['ops_database']
 ICEBERG_WAREHOUSE = f"s3://{args['iceberg_bucket']}/"
 OUTPUT_BUCKET     = args['output_bucket']
+LAYER             = args['layer'].upper()   # RAW | STANDARDIZED | CURATED
 
 CATALOG           = "glue_catalog"
 TABLE_INVENTORY   = f"{CATALOG}.{OPS_DB}.table_inventory"
@@ -61,55 +62,66 @@ spark.conf.set("spark.sql.catalog.glue_catalog.warehouse", ICEBERG_WAREHOUSE)
 
 
 def main():
-    logger.info("=== Inventory Reader — Reading active subscriptions ===")
+    logger.info("=== Inventory Reader — Layer: %s ===", LAYER)
 
-    # Read active subscriptions
     rows = (
         spark.table(TABLE_INVENTORY)
              .filter(F.col("is_active") == True)
              .collect()
     )
+    logger.info("Active subscriptions found: %d", len(rows))
 
-    logger.info("Found %d active subscription(s).", len(rows))
+    raw_database = args.get('raw_database', '')
 
-    if not rows:
-        logger.info("No active subscriptions — nothing to compact.")
-        # Write empty output so Map state doesn't fail
-        _write_output([])
-        job.commit()
-        return
+    if LAYER == "RAW":
+        # Auto-discover RAW tables from Glue Catalog rather than inventory
+        # so new topics are always included without a manual inventory update
+        raw_tables = spark.catalog.listTables(raw_database) if raw_database else []
+        work_items = [
+            {
+                "topic_name":      t.name,
+                "ingestion_mode":  next(
+                    (r["ingestion_mode"] or "STREAMING" for r in rows if r["raw_table"] == t.name),
+                    "STREAMING"
+                ),
+                "database":        raw_database,
+                "table":           t.name,
+                "layer":           "RAW",
+            }
+            for t in raw_tables
+        ]
+    else:
+        # STANDARDIZED or CURATED — driven by table_inventory
+        db_col    = "standardized_database" if LAYER == "STANDARDIZED" else "curated_database"
+        table_col = "standardized_table"    if LAYER == "STANDARDIZED" else "curated_table"
+        work_items = [
+            {
+                "topic_name":      row["topic_name"],
+                "ingestion_mode":  row["ingestion_mode"] or "STREAMING",
+                "database":        row[db_col],
+                "table":           row[table_col],
+                "layer":           LAYER,
+            }
+            for row in rows
+        ]
 
-    # Build work item list for Step Function Map state
-    work_items = [
-        {
-            "subscription_name":      row["subscription_name"],
-            "topic_name":             row["topic_name"],
-            "ingestion_mode":         row["ingestion_mode"] or "STREAMING",
-            "raw_database":           row["raw_database"],
-            "raw_table":              row["raw_table"],
-            "standardized_database":  row["standardized_database"],
-            "standardized_table":     row["standardized_table"],
-            "curated_database":       row["curated_database"],
-            "curated_table":          row["curated_table"],
-        }
-        for row in rows
-    ]
+    if not work_items:
+        logger.info("No work items for layer %s — writing empty list.", LAYER)
+    else:
+        logger.info("Emitting %d work item(s) for layer %s.", len(work_items), LAYER)
 
-    # Write JSON list to S3 for Step Function to pick up
-    _write_output(work_items)
-
-    logger.info("Inventory reader complete. Emitted %d work items.", len(work_items))
+    _write_output(work_items, LAYER)
     job.commit()
 
 
-def _write_output(work_items: list):
+def _write_output(work_items: list, layer: str):
     """
-    Writes the work_items array to a fixed S3 path.
-    The Step Function reads this file between the ReadInventory and Map states.
+    Writes the work_items array to a layer-specific S3 path.
+    Each Step Function reads its own file — no cross-layer contamination.
     """
     s3 = boto3.client('s3')
     payload = json.dumps({"work_items": work_items}, indent=2)
-    key = "maintenance/work_items.json"
+    key = f"maintenance/work_items_{layer.lower()}.json"
     s3.put_object(Bucket=OUTPUT_BUCKET, Key=key, Body=payload)
     logger.info("Work items written to s3://%s/%s", OUTPUT_BUCKET, key)
 
